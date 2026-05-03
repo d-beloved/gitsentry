@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Environment variables — never commit real .env files
+.env
+.env.local
+.env.*.local
+
+# Build output
+dist/
+build/
+.next/
+out/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+apps/web/
+gitsentry-prd.md

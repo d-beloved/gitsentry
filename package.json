@@ -1,0 +1,17 @@
+{
+  "name": "gitsentry",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/backend",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev:backend": "npm --workspace=apps/backend run dev",
+    "start:backend": "npm --workspace=apps/backend run start",
+    "test": "npm --workspaces run test --if-present"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
