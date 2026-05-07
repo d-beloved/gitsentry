@@ -1,0 +1,14 @@
+<svg width="720" height="180" viewBox="0 0 720 180" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Gitsentry.dev logo</title>
+  <desc id="desc">A bright green sentinel mark beside the Gitsentry.dev wordmark.</desc>
+  <rect width="720" height="180" rx="36" fill="#070A08"/>
+  <path d="M41 34H139L160 55V153H62L41 132V34Z" fill="#0D1410" stroke="#37FF8B" stroke-width="4"/>
+  <path d="M62 55H130L139 64V132H71L62 123V55Z" fill="#07120C" stroke="#1F6F46" stroke-width="3"/>
+  <path d="M87 83L100 70L113 83L100 96L87 83Z" fill="#37FF8B"/>
+  <path d="M73 105H127" stroke="#37FF8B" stroke-width="8" stroke-linecap="round"/>
+  <path d="M87 124H113" stroke="#A8FFD0" stroke-width="6" stroke-linecap="round"/>
+  <path d="M42 133L62 153M139 34L160 55" stroke="#A8FFD0" stroke-width="3" stroke-linecap="round"/>
+  <text x="202" y="98" fill="#F5FFF8" font-family="Avenir Next, Manrope, Verdana, sans-serif" font-size="52" font-weight="800" letter-spacing="-1.5">Gitsentry</text>
+  <text x="469" y="98" fill="#37FF8B" font-family="Avenir Next, Manrope, Verdana, sans-serif" font-size="52" font-weight="800" letter-spacing="-1.5">.dev</text>
+  <text x="205" y="126" fill="#7D9889" font-family="Cascadia Code, Source Code Pro, monospace" font-size="16" letter-spacing="3">AI SECURITY REVIEW FOR EVERY DIFF</text>
+</svg>

@@ -1,4 +1,4 @@
--- Run this against your Supabase project to create the GitSentry schema.
+-- Run this against your Supabase project to create the Gitsentry.dev schema.
 
 -- organisations (GitHub orgs or individual accounts)
 CREATE TABLE orgs (
@@ -10,7 +10,7 @@ CREATE TABLE orgs (
   created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
--- repositories connected to GitSentry
+-- repositories connected to Gitsentry.dev
 CREATE TABLE repos (
   id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id          UUID REFERENCES orgs(id) ON DELETE CASCADE,
@@ -56,6 +56,12 @@ CREATE TABLE findings (
   code_snippet    TEXT,
   description     TEXT NOT NULL,
   fix_suggestion  TEXT NOT NULL,
+  affected_component TEXT,
+  exploitation_scenario TEXT,
+  impact          TEXT,
+  evidence        TEXT,
+  confidence      TEXT,
+  attacker_profile TEXT,
   is_false_positive BOOLEAN DEFAULT FALSE,
   is_resolved     BOOLEAN DEFAULT FALSE,
   resolved_at     TIMESTAMPTZ,

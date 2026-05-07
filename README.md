@@ -1,9 +1,10 @@
-# GitSentry
+# Gitsentry.dev
 
 > AI-powered security scanner that watches every Git event: PRs, branch pushes, and direct commits to main, and catches vulnerabilities in your code before they reach production.
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![GitHub App](https://img.shields.io/badge/GitHub-App-black?logo=github)](https://github.com/apps/gitsentry)
+**[MIT License](LICENSE)** · **[Install GitHub App](https://github.com/apps/gitsentry)**
+
+![Gitsentry.dev logo](assets/gitsentry-dev-logo.svg)
 
 ---
 
@@ -13,7 +14,7 @@ Engineering teams ship code using AI tools (Cursor, Copilot, Claude Code, etc.) 
 
 ## The Solution
 
-GitSentry installs as a GitHub App. It listens to every `pull_request` and `push` event; PRs, feature branches, and direct pushes to main. On each event it runs an AI security analysis and surfaces findings exactly where developers already work: **as GitHub PR review comments and commit comments**.
+Gitsentry.dev installs as a GitHub App. It listens to every `pull_request` and `push` event: PRs, feature branches, and direct pushes to main. On each event it runs an AI security analysis and surfaces findings exactly where developers already work: **as GitHub PR comments and commit comments**.
 
 ```
 PR opened → webhook → AI analysis → GitHub review comment posted
@@ -21,11 +22,13 @@ PR opened → webhook → AI analysis → GitHub review comment posted
 
 ## Install
 
-[![Install GitSentry](https://img.shields.io/badge/Install-GitHub%20App-2ea44f?logo=github)](https://github.com/apps/gitsentry)
+**[Install Gitsentry.dev on GitHub](https://github.com/apps/gitsentry)**
 
 One click. No config required.
 
-The dashboard at [gitsentry.dev](https://gitsentry.dev) is hosted and proprietary. **The analysis engine powering it is fully open source** (this repo).
+![Gitsentry.dev install flow](docs/install-flow.svg)
+
+Gitsentry.dev is open-source security infrastructure you can run yourself. Use the hosted GitHub App, or self-host the webhook server, database, and dashboard for your own repos.
 
 ---
 
@@ -43,6 +46,12 @@ The dashboard at [gitsentry.dev](https://gitsentry.dev) is hosted and proprietar
 | `path_traversal`     | User input in file system operations              |
 | `xss`                | Unsanitised user content in HTML responses        |
 | `open_redirect`      | User-controlled redirect URLs                     |
+| `csrf` / `weak_session_management` | Browser and session flow weaknesses |
+| `privilege_escalation` / `mass_assignment` | Permission and object mutation abuse |
+| `race_condition` / `business_logic_abuse` | Workflow and state manipulation bugs |
+| `cors_misconfiguration` / `security_headers_missing` | Deployment and browser boundary risks |
+| `dependency_risk`    | Vulnerable or suspicious dependency behavior      |
+| `attack_chain`       | Multiple smaller issues combined into one exploit |
 
 ---
 
@@ -53,7 +62,7 @@ The dashboard at [gitsentry.dev](https://gitsentry.dev) is hosted and proprietar
 - Node.js 20+
 - A GitHub App (see setup below)
 - Supabase project
-- Redis (for job queue)
+- Redis (optional until queue processing is enabled)
 - Google Gemini API key
 
 ### 1. Create a GitHub App
@@ -98,12 +107,12 @@ npx smee -u https://smee.io/your-channel -t http://localhost:3000/webhook
 
 ```
 apps/
-  backend/          ← Node.js webhook server + AI engine (this repo, MIT)
+  backend/          ← Node.js webhook server + AI engine
 packages/
-  shared/           ← Shared TypeScript types and constants (this repo, MIT)
+  shared/           ← Shared TypeScript types and constants
 ```
 
-The dashboard at [gitsentry.dev](https://gitsentry.dev) is hosted and proprietary. The analysis engine powering it is fully open source.
+The app is designed to be self-hosted: configure your GitHub App, run the Supabase schema, start the backend, and point the dashboard at the same database.
 
 ---
 

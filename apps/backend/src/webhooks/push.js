@@ -51,16 +51,16 @@ async function handlePush(payload) {
     const { issues, summary } = await analyzeCode(diff, context);
 
     if (issues.length > 0) {
-      await saveFindings(scan.id, issues);
+      const findings = await saveFindings(scan.id, issues);
       await postCommitComment(
         repo.full_name,
         latestCommit.id,
-        issues,
+        findings,
         summary,
         scan.id,
         installationId
       );
-      await notifyIfNeeded(repo.full_name, issues, context.triggerType, branch);
+      await notifyIfNeeded(repo.full_name, findings, context.triggerType, branch);
     }
 
     await updateScanStatus(scan.id, issues, Date.now() - startedAt);

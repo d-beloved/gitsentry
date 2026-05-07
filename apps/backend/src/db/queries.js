@@ -91,6 +91,12 @@ async function updateScanStatus(scanId, issues, durationMs = 0, status = "comple
     .eq("id", scanId);
 
   if (error) throw new Error(`updateScanStatus: ${error.message}`);
+
+  if (status === "complete") {
+    updatePublicStats({ findings: issues.length, critical }).catch((err) => {
+      console.error("[stats] update failed:", err);
+    });
+  }
 }
 
 // ─── Findings ─────────────────────────────────────────────────────────────────
@@ -99,7 +105,7 @@ async function updateScanStatus(scanId, issues, durationMs = 0, status = "comple
  * Bulk-inserts all findings for a scan.
  */
 async function saveFindings(scanId, issues) {
-  if (!issues.length) return;
+  if (!issues.length) return [];
 
   // Look up repo_id from the scan row
   const { data: scan, error: scanErr } = await supabase
@@ -120,13 +126,41 @@ async function saveFindings(scanId, issues) {
     code_snippet: issue.code_snippet ?? null,
     description: issue.description,
     fix_suggestion: issue.fix_suggestion,
+    affected_component: issue.affected_component ?? null,
+    exploitation_scenario: issue.exploitation_scenario ?? null,
+    impact: issue.impact ?? null,
+    evidence: issue.evidence ?? null,
+    confidence: issue.confidence ?? null,
+    attacker_profile: issue.attacker_profile ?? null,
   }));
 
-  const { error } = await supabase.from("findings").insert(rows);
+  const { data, error } = await supabase.from("findings").insert(rows).select("id");
   if (error) throw new Error(`saveFindings: ${error.message}`);
+
+  return issues.map((issue, index) => ({
+    ...issue,
+    id: data?.[index]?.id,
+  }));
 }
 
 // ─── Public stats ─────────────────────────────────────────────────────────────
+
+async function updatePublicStats({ findings, critical }) {
+  const existing = await getPublicStats();
+  if (!existing) return;
+
+  const { error } = await supabase
+    .from("public_stats")
+    .update({
+      total_scans: Number(existing.total_scans ?? 0) + 1,
+      total_findings: Number(existing.total_findings ?? 0) + findings,
+      critical_caught: Number(existing.critical_caught ?? 0) + critical,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", existing.id);
+
+  if (error) throw new Error(`updatePublicStats: ${error.message}`);
+}
 
 /**
  * Returns the latest cached public stats row.
@@ -139,7 +173,11 @@ async function getPublicStats() {
     .limit(1)
     .single();
 
-  if (error) return null;
+  if (error) {
+    if (error.code === "PGRST116") return null;
+    throw new Error(`getPublicStats: ${error.message}`);
+  }
+
   return data;
 }
 

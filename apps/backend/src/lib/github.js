@@ -94,6 +94,8 @@ async function postCommitComment(repoFullName, commitSha, issues, summary, scanI
 // ─── Comment formatter ────────────────────────────────────────────────────────
 
 const SEVERITY_EMOJI = { critical: "🔴", high: "🟠", medium: "🟡", low: "🔵" };
+const PRODUCT_NAME = "Gitsentry.dev";
+const PRODUCT_URL = "https://gitsentry.dev";
 
 const CATEGORY_LABELS = {
   hardcoded_secret: "Hardcoded Secret",
@@ -107,8 +109,41 @@ const CATEGORY_LABELS = {
   path_traversal: "Path Traversal",
   xss: "Cross-Site Scripting (XSS)",
   open_redirect: "Open Redirect",
+  csrf: "Cross-Site Request Forgery (CSRF)",
+  weak_session_management: "Weak Session Management",
+  privilege_escalation: "Privilege Escalation",
+  insecure_password_reset: "Insecure Password Reset",
+  token_leakage: "Token Leakage",
+  command_injection: "Command Injection",
+  nosql_injection: "NoSQL Injection",
+  template_injection: "Template Injection",
+  ssrf: "Server-Side Request Forgery (SSRF)",
+  insecure_file_upload: "Insecure File Upload",
+  sensitive_data_exposure: "Sensitive Data Exposure",
+  crypto_misuse: "Cryptography Misuse",
+  insecure_storage: "Insecure Storage",
+  mass_assignment: "Mass Assignment",
+  business_logic_abuse: "Business Logic Abuse",
+  race_condition: "Race Condition",
+  replay_attack: "Replay Attack",
+  timing_attack: "Timing Attack",
+  cache_poisoning: "Cache Poisoning",
+  cors_misconfiguration: "CORS Misconfiguration",
+  security_headers_missing: "Missing Security Headers",
+  debug_exposure: "Debug or Admin Exposure",
+  cloud_misconfiguration: "Cloud or Storage Misconfiguration",
+  dependency_risk: "Dependency or Supply Chain Risk",
+  attack_chain: "Attack Chain",
   other: "Other",
 };
+
+function findingReportUrl(findingId) {
+  return `${PRODUCT_URL}/dashboard/findings/${findingId}`;
+}
+
+function findingDismissUrl(findingId) {
+  return `${PRODUCT_URL}/api/findings/${findingId}/dismiss`;
+}
 
 function formatReviewBody(issues, summary, scanId) {
   const sorted = sortBySeverity(issues);
@@ -118,7 +153,7 @@ function formatReviewBody(issues, summary, scanId) {
     .filter((s) => counts[s] > 0)
     .map((s) => `${counts[s]} ${s}`);
 
-  let body = `## 🔐 GitSentry Security Scan\n\n`;
+  let body = `## 🔐 ${PRODUCT_NAME} Security Scan\n\n`;
   body += `Found **${issues.length} issue${issues.length !== 1 ? "s" : ""}** in this PR`;
   if (countParts.length) body += ` (${countParts.join(", ")})`;
   body += `\n\n---\n\n`;
@@ -139,12 +174,18 @@ function formatReviewBody(issues, summary, scanId) {
 
     body += `**Issue:** ${issue.description}\n\n`;
     body += `**Fix:** ${issue.fix_suggestion}\n\n`;
+
+    if (issue.id) {
+      body += `[View full report](${findingReportUrl(issue.id)}) · `;
+      body += `[False positive?](${findingDismissUrl(issue.id)})\n\n`;
+    }
+
     body += `---\n\n`;
   }
 
   body += `> ${summary}\n\n`;
-  body += `_Powered by [GitSentry](https://gitsentry.dev)`;
-  if (scanId) body += ` · [View full report](https://gitsentry.dev/findings/${scanId})`;
+  body += `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})`;
+  if (scanId) body += ` · scan ${scanId}`;
   body += `_`;
 
   return body;

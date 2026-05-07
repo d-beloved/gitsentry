@@ -44,9 +44,9 @@ async function handlePR(payload) {
     const { issues, summary } = await analyzeCode(diff, context);
 
     if (issues.length > 0) {
-      await saveFindings(scan.id, issues);
-      await postPRReview(repo.full_name, pr.number, issues, summary, scan.id, installationId);
-      await notifyIfNeeded(repo.full_name, issues, "pull_request", pr.head.ref);
+      const findings = await saveFindings(scan.id, issues);
+      await postPRReview(repo.full_name, pr.number, findings, summary, scan.id, installationId);
+      await notifyIfNeeded(repo.full_name, findings, "pull_request", pr.head.ref);
     }
 
     await updateScanStatus(scan.id, issues, Date.now() - startedAt);

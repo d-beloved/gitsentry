@@ -1,7 +1,7 @@
 {
   "name": "@gitsentry/backend",
   "version": "1.0.0",
-  "description": "GitSentry backend — AI-powered security scanner webhook server",
+  "description": "Gitsentry.dev backend - AI-powered security scanner webhook server",
   "main": "src/index.js",
   "license": "MIT",
   "scripts": {

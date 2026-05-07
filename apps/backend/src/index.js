@@ -13,7 +13,7 @@ app.use(
   })
 );
 
-app.get("/health", (_req, res) => res.json({ status: "ok", service: "gitsentry-backend" }));
+app.get("/health", (_req, res) => res.json({ status: "ok", service: "gitsentry-dev-backend" }));
 
 app.use("/webhook", webhookRouter);
 
@@ -22,7 +22,7 @@ app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`GitSentry backend listening on port ${PORT}`);
+  console.log(`Gitsentry.dev backend listening on port ${PORT}`);
   console.log(`Webhook endpoint: POST http://localhost:${PORT}/webhook`);
 });
 

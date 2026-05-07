@@ -1,15 +1,13 @@
-# Contributing to GitSentry
+# Contributing to Gitsentry.dev
 
-Thank you for your interest in contributing to GitSentry!
+Thank you for your interest in contributing to Gitsentry.dev.
 
 ## What's in scope
 
-This repository contains the open source analysis engine:
+This repository contains the open-source scanner core:
 
 - `apps/backend/` — the webhook server and AI analysis engine
 - `packages/shared/` — shared TypeScript types and constants
-
-The dashboard at [gitsentry.dev](https://gitsentry.dev) is proprietary.
 
 ## Getting started
 
