@@ -21,7 +21,7 @@ The dashboard at [gitsentry.dev](https://gitsentry.dev) is proprietary.
 
 - Keep PRs focused. One feature or fix per PR.
 - Add tests for new behaviour.
-- Run `npm test` before opening a PR.
+- Run `yarn test` before opening a PR.
 - Write a clear PR description: what changed and why.
 
 ## Security issues

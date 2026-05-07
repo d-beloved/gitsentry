@@ -82,8 +82,8 @@ Run the SQL in `apps/backend/src/db/schema.sql` against your Supabase project.
 ### 4. Start the server
 
 ```bash
-npm install
-npm run dev:backend
+yarn install
+yarn run dev:backend
 ```
 
 ### 5. Expose locally for testing

@@ -1,6 +1,14 @@
 # Dependencies
 node_modules/
 
+# Yarn Berry
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.cjs
+.pnp.loader.mjs
+
 # Environment variables — never commit real .env files
 .env
 .env.local

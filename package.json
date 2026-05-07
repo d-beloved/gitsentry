@@ -7,9 +7,9 @@
     "packages/shared"
   ],
   "scripts": {
-    "dev:backend": "npm --workspace=apps/backend run dev",
-    "start:backend": "npm --workspace=apps/backend run start",
-    "test": "npm --workspaces run test --if-present"
+    "dev:backend": "yarn workspace @gitsentry/backend dev",
+    "start:backend": "yarn workspace @gitsentry/backend start",
+    "test": "yarn workspaces foreach run test"
   },
   "engines": {
     "node": ">=20.0.0"
