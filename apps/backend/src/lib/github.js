@@ -191,4 +191,76 @@ function formatReviewBody(issues, summary, scanId) {
   return body;
 }
 
-module.exports = { getDiff, getPushDiff, postPRReview, postCommitComment };
+/**
+ * Fetch a diff spanning the last 5 commits on a branch — used for security sweeps.
+ */
+async function getSweepDiff(repoFullName, branch, installationId) {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  const { data: commits } = await octokit.request("GET /repos/{owner}/{repo}/commits", {
+    owner,
+    repo,
+    sha: branch,
+    per_page: 6,
+  });
+
+  if (!commits.length) return "";
+
+  // With only one commit there is no range to compare; just return that commit's diff
+  if (commits.length === 1) {
+    return getPushDiff(repoFullName, commits[0].sha, installationId);
+  }
+
+  const head = commits[0].sha;
+  const base = commits[Math.min(commits.length - 1, 5)].sha;
+
+  const response = await octokit.request(
+    "GET /repos/{owner}/{repo}/compare/{basehead}",
+    {
+      owner,
+      repo,
+      basehead: `${base}...${head}`,
+      headers: { accept: "application/vnd.github.v3.diff" },
+    }
+  );
+
+  return response.data;
+}
+
+/**
+ * Post an upgrade-prompt comment when the free-tier scan limit is reached.
+ * Handles both PR comments (prNumber set) and commit comments (commitSha set).
+ */
+async function postUpgradeComment(repoFullName, { prNumber, commitSha }, installationId) {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  const body = [
+    `## 🔐 ${PRODUCT_NAME} — Free Tier Limit Reached`,
+    "",
+    "You've used all **50 free scans** for this month. This commit was not scanned.",
+    "",
+    `**[Upgrade to Pro](${PRODUCT_URL}/dashboard/billing)** for unlimited scans, private repo support, and on-demand security sweeps.`,
+    "",
+    `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})_`,
+  ].join("\n");
+
+  if (prNumber != null) {
+    await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
+      owner,
+      repo,
+      issue_number: prNumber,
+      body,
+    });
+  } else if (commitSha) {
+    await octokit.request("POST /repos/{owner}/{repo}/commits/{commit_sha}/comments", {
+      owner,
+      repo,
+      commit_sha: commitSha,
+      body,
+    });
+  }
+}
+
+module.exports = { getDiff, getPushDiff, getSweepDiff, postPRReview, postCommitComment, postUpgradeComment };

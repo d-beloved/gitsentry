@@ -6,7 +6,8 @@
   "license": "MIT",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "test": "jest"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",
@@ -15,10 +16,18 @@
     "bull": "^4.16.0",
     "dotenv": "^16.4.0",
     "express": "^4.21.0",
+    "express-rate-limit": "^8.5.1",
     "parse-diff": "^0.11.1"
   },
   "devDependencies": {
+    "jest": "^30.4.2",
     "nodemon": "^3.1.0"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "testMatch": [
+      "**/__tests__/**/*.test.js"
+    ]
   },
   "engines": {
     "node": ">=20.0.0"

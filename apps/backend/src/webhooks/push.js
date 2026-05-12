@@ -1,15 +1,14 @@
-const { analyzeCode } = require("../lib/ai");
-const { getPushDiff, postCommitComment } = require("../lib/github");
-const { saveScan, saveFindings, updateScanStatus } = require("../db/queries");
-const { notifyIfNeeded } = require("../lib/notifier");
-const { parseDiffStats } = require("../lib/differ");
+const { getPushDiff } = require("../lib/github");
+const { saveScan } = require("../db/queries");
+const { parseDiffStats, truncateDiff } = require("../lib/differ");
+const { scanQueue } = require("../lib/queue");
+const { processScanJob } = require("../lib/workers/scanWorker");
 
 const MAIN_BRANCHES = ["main", "master"];
 
 async function handlePush(payload) {
   const { ref, commits, repository: repo, pusher, installation } = payload;
 
-  // Skip tag pushes and empty commits
   if (!ref.startsWith("refs/heads/") || !commits?.length) return;
 
   const installationId = installation?.id;
@@ -26,20 +25,14 @@ async function handlePush(payload) {
   if (!diff || diff.length < 10) return;
 
   const { filesChanged, linesAdded } = parseDiffStats(diff);
-
-  const context = {
-    repo: repo.full_name,
-    branch,
-    triggerType: isMain ? "push_main" : "push_branch",
-    author: pusher.name,
-  };
-
-  const startedAt = Date.now();
+  const triggerType = isMain ? "push_main" : "push_branch";
 
   const scan = await saveScan({
     repoFullName: repo.full_name,
     repoGithubId: repo.id,
-    triggerType: context.triggerType,
+    repoOwner: { githubId: repo.owner.id, login: repo.owner.login, avatarUrl: repo.owner.avatar_url },
+    installationId,
+    triggerType,
     triggerRef: branch,
     commitSha: latestCommit.id,
     author: pusher.name,
@@ -47,26 +40,30 @@ async function handlePush(payload) {
     linesAdded,
   });
 
-  try {
-    const { issues, summary } = await analyzeCode(diff, context);
+  const jobData = {
+    scanId: scan.id,
+    repoId: scan.repo_id,
+    repoFullName: repo.full_name,
+    diff: truncateDiff(diff),
+    context: {
+      repo: repo.full_name,
+      branch,
+      triggerType,
+      author: pusher.name,
+    },
+    installationId,
+    prNumber: null,
+    commitSha: latestCommit.id,
+    branch,
+    triggerType,
+  };
 
-    if (issues.length > 0) {
-      const findings = await saveFindings(scan.id, issues);
-      await postCommitComment(
-        repo.full_name,
-        latestCommit.id,
-        findings,
-        summary,
-        scan.id,
-        installationId
-      );
-      await notifyIfNeeded(repo.full_name, findings, context.triggerType, branch);
-    }
-
-    await updateScanStatus(scan.id, issues, Date.now() - startedAt);
-  } catch (err) {
-    console.error(`[push] Analysis failed for ${repo.full_name} ${branch}:`, err);
-    await updateScanStatus(scan.id, [], 0, "failed");
+  if (scanQueue) {
+    await scanQueue.add(jobData);
+  } else {
+    processScanJob(jobData).catch((err) =>
+      console.error(`[push] Inline scan failed for ${repo.full_name} ${branch}:`, err.message)
+    );
   }
 }
 

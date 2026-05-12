@@ -1,8 +1,18 @@
 require("dotenv").config();
 const express = require("express");
+const rateLimit = require("express-rate-limit");
 const webhookRouter = require("./webhooks/router");
+const sweepRouter = require("./api/sweep");
 
 const app = express();
+
+const webhookLimiter = rateLimit({
+  windowMs: 60 * 1000, // 1 minute
+  max: 120,            // GitHub sends at most a handful per push; 120/min is generous
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests" },
+});
 
 // Capture raw body for HMAC signature verification before JSON parsing
 app.use(
@@ -15,7 +25,8 @@ app.use(
 
 app.get("/health", (_req, res) => res.json({ status: "ok", service: "gitsentry-dev-backend" }));
 
-app.use("/webhook", webhookRouter);
+app.use("/webhook", webhookLimiter, webhookRouter);
+app.use("/api/sweep", sweepRouter);
 
 // 404 fallback
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));

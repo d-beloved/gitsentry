@@ -140,3 +140,11 @@ export interface ScanContext {
   triggerType: TriggerType;
   author: string | null;
 }
+
+export interface Installation {
+  id: string;
+  github_install_id: number;
+  org_id: string;
+  installer_github_id: number;
+  created_at: string;
+}

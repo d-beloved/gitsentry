@@ -1,8 +1,8 @@
-const { analyzeCode } = require("../lib/ai");
-const { getDiff, postPRReview } = require("../lib/github");
-const { saveScan, saveFindings, updateScanStatus } = require("../db/queries");
-const { notifyIfNeeded } = require("../lib/notifier");
-const { parseDiffStats } = require("../lib/differ");
+const { getDiff } = require("../lib/github");
+const { saveScan } = require("../db/queries");
+const { parseDiffStats, truncateDiff } = require("../lib/differ");
+const { scanQueue } = require("../lib/queue");
+const { processScanJob } = require("../lib/workers/scanWorker");
 
 async function handlePR(payload) {
   const { action, pull_request: pr, repository: repo, installation } = payload;
@@ -20,18 +20,11 @@ async function handlePR(payload) {
 
   const { filesChanged, linesAdded } = parseDiffStats(diff);
 
-  const context = {
-    repo: repo.full_name,
-    branch: pr.head.ref,
-    triggerType: "pull_request",
-    author: pr.user.login,
-  };
-
-  const startedAt = Date.now();
-
   const scan = await saveScan({
     repoFullName: repo.full_name,
     repoGithubId: repo.id,
+    repoOwner: { githubId: repo.owner.id, login: repo.owner.login, avatarUrl: repo.owner.avatar_url },
+    installationId,
     triggerType: "pull_request",
     triggerRef: String(pr.number),
     commitSha: pr.head.sha,
@@ -40,19 +33,30 @@ async function handlePR(payload) {
     linesAdded,
   });
 
-  try {
-    const { issues, summary } = await analyzeCode(diff, context);
+  const jobData = {
+    scanId: scan.id,
+    repoId: scan.repo_id,
+    repoFullName: repo.full_name,
+    diff: truncateDiff(diff),
+    context: {
+      repo: repo.full_name,
+      branch: pr.head.ref,
+      triggerType: "pull_request",
+      author: pr.user.login,
+    },
+    installationId,
+    prNumber: pr.number,
+    commitSha: pr.head.sha,
+    branch: pr.head.ref,
+    triggerType: "pull_request",
+  };
 
-    if (issues.length > 0) {
-      const findings = await saveFindings(scan.id, issues);
-      await postPRReview(repo.full_name, pr.number, findings, summary, scan.id, installationId);
-      await notifyIfNeeded(repo.full_name, findings, "pull_request", pr.head.ref);
-    }
-
-    await updateScanStatus(scan.id, issues, Date.now() - startedAt);
-  } catch (err) {
-    console.error(`[PR] Analysis failed for ${repo.full_name}#${pr.number}:`, err);
-    await updateScanStatus(scan.id, [], 0, "failed");
+  if (scanQueue) {
+    await scanQueue.add(jobData);
+  } else {
+    processScanJob(jobData).catch((err) =>
+      console.error(`[PR] Inline scan failed for ${repo.full_name}#${pr.number}:`, err.message)
+    );
   }
 }
 

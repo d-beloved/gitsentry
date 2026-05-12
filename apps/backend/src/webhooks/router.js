@@ -2,6 +2,7 @@ const express = require("express");
 const crypto = require("crypto");
 const { handlePR } = require("./pullRequest");
 const { handlePush } = require("./push");
+const { handleInstallation } = require("./installation");
 
 const router = express.Router();
 
@@ -36,6 +37,7 @@ router.post("/", async (req, res) => {
   try {
     if (event === "pull_request") await handlePR(req.body);
     if (event === "push") await handlePush(req.body);
+    if (event === "installation") await handleInstallation(req.body);
   } catch (err) {
     console.error(`[webhook] error processing event=${event} delivery=${delivery}:`, err);
   }
