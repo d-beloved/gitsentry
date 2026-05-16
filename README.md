@@ -34,24 +34,24 @@ Gitsentry.dev is open-source security infrastructure you can run yourself. Use t
 
 ## What It Catches
 
-| Category             | Example                                           |
-| -------------------- | ------------------------------------------------- |
-| `hardcoded_secret`   | API keys, tokens, passwords in source code        |
-| `missing_auth`       | New routes with no authentication middleware      |
-| `sql_injection`      | User input concatenated into SQL queries          |
-| `idor`               | User-supplied IDs fetched without ownership check |
-| `verbose_error`      | Stack traces / DB errors exposed to client        |
-| `unvalidated_input`  | User input passed to dangerous operations         |
-| `missing_rate_limit` | Auth endpoints with no rate limiting              |
-| `path_traversal`     | User input in file system operations              |
-| `xss`                | Unsanitised user content in HTML responses        |
-| `open_redirect`      | User-controlled redirect URLs                     |
-| `csrf` / `weak_session_management` | Browser and session flow weaknesses |
-| `privilege_escalation` / `mass_assignment` | Permission and object mutation abuse |
-| `race_condition` / `business_logic_abuse` | Workflow and state manipulation bugs |
-| `cors_misconfiguration` / `security_headers_missing` | Deployment and browser boundary risks |
-| `dependency_risk`    | Vulnerable or suspicious dependency behavior      |
-| `attack_chain`       | Multiple smaller issues combined into one exploit |
+| Category                                             | Example                                           |
+| ---------------------------------------------------- | ------------------------------------------------- |
+| `hardcoded_secret`                                   | API keys, tokens, passwords in source code        |
+| `missing_auth`                                       | New routes with no authentication middleware      |
+| `sql_injection`                                      | User input concatenated into SQL queries          |
+| `idor`                                               | User-supplied IDs fetched without ownership check |
+| `verbose_error`                                      | Stack traces / DB errors exposed to client        |
+| `unvalidated_input`                                  | User input passed to dangerous operations         |
+| `missing_rate_limit`                                 | Auth endpoints with no rate limiting              |
+| `path_traversal`                                     | User input in file system operations              |
+| `xss`                                                | Unsanitised user content in HTML responses        |
+| `open_redirect`                                      | User-controlled redirect URLs                     |
+| `csrf` / `weak_session_management`                   | Browser and session flow weaknesses               |
+| `privilege_escalation` / `mass_assignment`           | Permission and object mutation abuse              |
+| `race_condition` / `business_logic_abuse`            | Workflow and state manipulation bugs              |
+| `cors_misconfiguration` / `security_headers_missing` | Deployment and browser boundary risks             |
+| `dependency_risk`                                    | Vulnerable or suspicious dependency behavior      |
+| `attack_chain`                                       | Multiple smaller issues combined into one exploit |
 
 ---
 
@@ -79,8 +79,7 @@ Gitsentry.dev is open-source security infrastructure you can run yourself. Use t
 ### 2. Configure environment
 
 ```bash
-cd apps/backend
-cp .env.example .env
+cp apps/backend/.env.example apps/backend/.env
 # Fill in your values
 ```
 
@@ -92,7 +91,7 @@ Run the SQL in `apps/backend/src/db/schema.sql` against your Supabase project.
 
 ```bash
 yarn install
-yarn run dev:backend
+yarn dev
 ```
 
 ### 5. Expose locally for testing
@@ -105,11 +104,11 @@ npx smee -u https://smee.io/your-channel -t http://localhost:3000/webhook
 
 ## Repository Structure
 
+This repo is the **open-source scanner only** — a single Node package at the root (`yarn dev`, `yarn test`). Source lives under `apps/backend/`; `packages/scanner-contract/` defines public finding types and scanner constants.
+
 ```
-apps/
-  backend/          ← Node.js webhook server + AI engine
-packages/
-  shared/           ← Shared TypeScript types and constants
+apps/backend/src/           ← webhook server + AI engine
+packages/scanner-contract/  ← public scanner types + constants
 ```
 
 The app is designed to be self-hosted: configure your GitHub App, run the Supabase schema, start the backend, and point the dashboard at the same database.

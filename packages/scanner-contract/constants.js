@@ -1,18 +1,21 @@
-export const SEVERITY_ORDER: Record<string, number> = {
+/** @type {Record<string, number>} */
+const SEVERITY_ORDER = {
   critical: 0,
   high: 1,
   medium: 2,
   low: 3,
 };
 
-export const SEVERITY_EMOJI: Record<string, string> = {
+/** @type {Record<string, string>} */
+const SEVERITY_EMOJI = {
   critical: "🔴",
   high: "🟠",
   medium: "🟡",
   low: "🔵",
 };
 
-export const CATEGORY_LABELS: Record<string, string> = {
+/** @type {Record<string, string>} */
+const CATEGORY_LABELS = {
   hardcoded_secret: "Hardcoded Secret",
   missing_auth: "Missing Authentication",
   sql_injection: "SQL Injection",
@@ -52,10 +55,21 @@ export const CATEGORY_LABELS: Record<string, string> = {
   other: "Other",
 };
 
-export const FINDING_CATEGORIES = Object.keys(CATEGORY_LABELS);
+const FINDING_CATEGORIES = Object.keys(CATEGORY_LABELS);
 
-export const MAIN_BRANCHES = ["main", "master"];
+const MAIN_BRANCHES = ["main", "master"];
 
-export const MAX_DIFF_BYTES = 12000;
+const MAX_DIFF_BYTES = 12000;
 
-export const GITSENTRY_URL = "https://gitsentry.dev";
+/** Hosted product URL (used in GitHub review comment links). */
+const GITSENTRY_URL = "https://gitsentry.dev";
+
+module.exports = {
+  SEVERITY_ORDER,
+  SEVERITY_EMOJI,
+  CATEGORY_LABELS,
+  FINDING_CATEGORIES,
+  MAIN_BRANCHES,
+  MAX_DIFF_BYTES,
+  GITSENTRY_URL,
+};

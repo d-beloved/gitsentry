@@ -23,8 +23,5 @@ jobs:
       - name: Install dependencies
         run: yarn install
 
-      - name: Lint
-        run: yarn workspace @gitsentry/backend lint --if-present
-
       - name: Test
-        run: yarn workspace @gitsentry/backend test --if-present
+        run: yarn test

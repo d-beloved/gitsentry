@@ -4,10 +4,12 @@ Thank you for your interest in contributing to Gitsentry.dev.
 
 ## What's in scope
 
-This repository contains the open-source scanner core:
+This repository contains the open-source scanner core (one Node package at the repo root):
 
-- `apps/backend/` — the webhook server and AI analysis engine
-- `packages/shared/` — shared TypeScript types and constants
+- `apps/backend/` — webhook server and AI analysis engine source
+- `packages/scanner-contract/` — public finding types and scanner constants
+
+Install and test from the repo root: `yarn install`, `yarn test`, `yarn dev`.
 
 ## Getting started
 

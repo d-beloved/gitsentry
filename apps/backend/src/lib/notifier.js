@@ -1,9 +1,12 @@
 const { supabase } = require("../db/client");
 const { sortBySeverity, countBySeverity } = require("./scorer");
+const {
+  SEVERITY_EMOJI,
+  SEVERITY_ORDER,
+  GITSENTRY_URL,
+} = require("../../../../packages/scanner-contract/constants");
 
-const SEVERITY_EMOJI = { critical: "🔴", high: "🟠", medium: "🟡", low: "🔵" };
-const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
-const PRODUCT_URL = "https://gitsentry.dev";
+const PRODUCT_URL = GITSENTRY_URL;
 const FROM_EMAIL = "Gitsentry.dev <alerts@gitsentry.dev>";
 
 // ─── Slack ────────────────────────────────────────────────────────────────────

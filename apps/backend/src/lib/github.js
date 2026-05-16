@@ -1,16 +1,28 @@
-const { App } = require("@octokit/app");
-const { sortBySeverity, countBySeverity } = require("./scorer");
+const {App} = require("@octokit/app");
+const {sortBySeverity, countBySeverity} = require("./scorer");
+const {
+  SEVERITY_EMOJI,
+  CATEGORY_LABELS,
+  GITSENTRY_URL,
+} = require("../../../../packages/scanner-contract/constants");
 
 // Lazy-initialise so tests can run without env vars
 let _app;
 function getApp() {
   if (!_app) {
-    const privateKey = process.env.GITHUB_APP_PRIVATE_KEY
-      ? Buffer.from(process.env.GITHUB_APP_PRIVATE_KEY, "base64").toString("utf8")
-      : "";
+    const appId = process.env.GITHUB_APP_ID;
+    const encodedKey = process.env.GITHUB_APP_PRIVATE_KEY;
+
+    if (!appId || !encodedKey) {
+      throw new Error(
+        "Missing GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY environment variables.",
+      );
+    }
+
+    const privateKey = Buffer.from(encodedKey, "base64").toString("utf8");
 
     _app = new App({
-      appId: process.env.GITHUB_APP_ID,
+      appId,
       privateKey,
     });
   }
@@ -30,12 +42,15 @@ async function getDiff(repoFullName, prNumber, installationId) {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const response = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
-    owner,
-    repo,
-    pull_number: prNumber,
-    headers: { accept: "application/vnd.github.v3.diff" },
-  });
+  const response = await octokit.request(
+    "GET /repos/{owner}/{repo}/pulls/{pull_number}",
+    {
+      owner,
+      repo,
+      pull_number: prNumber,
+      headers: {accept: "application/vnd.github.v3.diff"},
+    },
+  );
 
   return response.data;
 }
@@ -47,12 +62,15 @@ async function getPushDiff(repoFullName, commitSha, installationId) {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const response = await octokit.request("GET /repos/{owner}/{repo}/commits/{ref}", {
-    owner,
-    repo,
-    ref: commitSha,
-    headers: { accept: "application/vnd.github.v3.diff" },
-  });
+  const response = await octokit.request(
+    "GET /repos/{owner}/{repo}/commits/{ref}",
+    {
+      owner,
+      repo,
+      ref: commitSha,
+      headers: {accept: "application/vnd.github.v3.diff"},
+    },
+  );
 
   return response.data;
 }
@@ -60,82 +78,61 @@ async function getPushDiff(repoFullName, commitSha, installationId) {
 /**
  * Post a PR review comment with all findings.
  */
-async function postPRReview(repoFullName, prNumber, issues, summary, scanId, installationId) {
+async function postPRReview(
+  repoFullName,
+  prNumber,
+  issues,
+  summary,
+  scanId,
+  installationId,
+) {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
   const body = formatReviewBody(issues, summary, scanId);
 
-  await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
-    owner,
-    repo,
-    issue_number: prNumber,
-    body,
-  });
+  await octokit.request(
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    {
+      owner,
+      repo,
+      issue_number: prNumber,
+      body,
+    },
+  );
 }
 
 /**
  * Post a comment on a commit with all findings.
  */
-async function postCommitComment(repoFullName, commitSha, issues, summary, scanId, installationId) {
+async function postCommitComment(
+  repoFullName,
+  commitSha,
+  issues,
+  summary,
+  scanId,
+  installationId,
+) {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
   const body = formatReviewBody(issues, summary, scanId);
 
-  await octokit.request("POST /repos/{owner}/{repo}/commits/{commit_sha}/comments", {
-    owner,
-    repo,
-    commit_sha: commitSha,
-    body,
-  });
+  await octokit.request(
+    "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments",
+    {
+      owner,
+      repo,
+      commit_sha: commitSha,
+      body,
+    },
+  );
 }
 
 // ─── Comment formatter ────────────────────────────────────────────────────────
 
-const SEVERITY_EMOJI = { critical: "🔴", high: "🟠", medium: "🟡", low: "🔵" };
 const PRODUCT_NAME = "Gitsentry.dev";
-const PRODUCT_URL = "https://gitsentry.dev";
-
-const CATEGORY_LABELS = {
-  hardcoded_secret: "Hardcoded Secret",
-  missing_auth: "Missing Authentication",
-  sql_injection: "SQL Injection",
-  idor: "Insecure Direct Object Reference (IDOR)",
-  verbose_error: "Verbose Error Exposure",
-  unvalidated_input: "Unvalidated Input",
-  missing_rate_limit: "Missing Rate Limit",
-  insecure_deserialization: "Insecure Deserialization",
-  path_traversal: "Path Traversal",
-  xss: "Cross-Site Scripting (XSS)",
-  open_redirect: "Open Redirect",
-  csrf: "Cross-Site Request Forgery (CSRF)",
-  weak_session_management: "Weak Session Management",
-  privilege_escalation: "Privilege Escalation",
-  insecure_password_reset: "Insecure Password Reset",
-  token_leakage: "Token Leakage",
-  command_injection: "Command Injection",
-  nosql_injection: "NoSQL Injection",
-  template_injection: "Template Injection",
-  ssrf: "Server-Side Request Forgery (SSRF)",
-  insecure_file_upload: "Insecure File Upload",
-  sensitive_data_exposure: "Sensitive Data Exposure",
-  crypto_misuse: "Cryptography Misuse",
-  insecure_storage: "Insecure Storage",
-  mass_assignment: "Mass Assignment",
-  business_logic_abuse: "Business Logic Abuse",
-  race_condition: "Race Condition",
-  replay_attack: "Replay Attack",
-  timing_attack: "Timing Attack",
-  cache_poisoning: "Cache Poisoning",
-  cors_misconfiguration: "CORS Misconfiguration",
-  security_headers_missing: "Missing Security Headers",
-  debug_exposure: "Debug or Admin Exposure",
-  cloud_misconfiguration: "Cloud or Storage Misconfiguration",
-  dependency_risk: "Dependency or Supply Chain Risk",
-  attack_chain: "Attack Chain",
-  other: "Other",
-};
+const PRODUCT_URL = GITSENTRY_URL;
 
 function findingReportUrl(findingId) {
   return `${PRODUCT_URL}/dashboard/findings/${findingId}`;
@@ -198,12 +195,15 @@ async function getSweepDiff(repoFullName, branch, installationId) {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const { data: commits } = await octokit.request("GET /repos/{owner}/{repo}/commits", {
-    owner,
-    repo,
-    sha: branch,
-    per_page: 6,
-  });
+  const {data: commits} = await octokit.request(
+    "GET /repos/{owner}/{repo}/commits",
+    {
+      owner,
+      repo,
+      sha: branch,
+      per_page: 6,
+    },
+  );
 
   if (!commits.length) return "";
 
@@ -221,8 +221,8 @@ async function getSweepDiff(repoFullName, branch, installationId) {
       owner,
       repo,
       basehead: `${base}...${head}`,
-      headers: { accept: "application/vnd.github.v3.diff" },
-    }
+      headers: {accept: "application/vnd.github.v3.diff"},
+    },
   );
 
   return response.data;
@@ -232,7 +232,11 @@ async function getSweepDiff(repoFullName, branch, installationId) {
  * Post an upgrade-prompt comment when the free-tier scan limit is reached.
  * Handles both PR comments (prNumber set) and commit comments (commitSha set).
  */
-async function postUpgradeComment(repoFullName, { prNumber, commitSha }, installationId) {
+async function postUpgradeComment(
+  repoFullName,
+  {prNumber, commitSha},
+  installationId,
+) {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -247,20 +251,33 @@ async function postUpgradeComment(repoFullName, { prNumber, commitSha }, install
   ].join("\n");
 
   if (prNumber != null) {
-    await octokit.request("POST /repos/{owner}/{repo}/issues/{issue_number}/comments", {
-      owner,
-      repo,
-      issue_number: prNumber,
-      body,
-    });
+    await octokit.request(
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+      {
+        owner,
+        repo,
+        issue_number: prNumber,
+        body,
+      },
+    );
   } else if (commitSha) {
-    await octokit.request("POST /repos/{owner}/{repo}/commits/{commit_sha}/comments", {
-      owner,
-      repo,
-      commit_sha: commitSha,
-      body,
-    });
+    await octokit.request(
+      "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments",
+      {
+        owner,
+        repo,
+        commit_sha: commitSha,
+        body,
+      },
+    );
   }
 }
 
-module.exports = { getDiff, getPushDiff, getSweepDiff, postPRReview, postCommitComment, postUpgradeComment };
+module.exports = {
+  getDiff,
+  getPushDiff,
+  getSweepDiff,
+  postPRReview,
+  postCommitComment,
+  postUpgradeComment,
+};

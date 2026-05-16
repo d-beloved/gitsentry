@@ -1,4 +1,4 @@
-const SEVERITY_ORDER = { critical: 0, high: 1, medium: 2, low: 3 };
+const { SEVERITY_ORDER } = require("../../../../packages/scanner-contract/constants");
 
 /**
  * Counts findings by severity level.

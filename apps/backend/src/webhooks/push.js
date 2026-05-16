@@ -4,7 +4,7 @@ const { parseDiffStats, truncateDiff } = require("../lib/differ");
 const { scanQueue } = require("../lib/queue");
 const { processScanJob } = require("../lib/workers/scanWorker");
 
-const MAIN_BRANCHES = ["main", "master"];
+const {MAIN_BRANCHES} = require("../../../../packages/scanner-contract/constants");
 
 async function handlePush(payload) {
   const { ref, commits, repository: repo, pusher, installation } = payload;

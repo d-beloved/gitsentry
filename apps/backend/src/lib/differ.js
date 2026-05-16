@@ -1,4 +1,5 @@
 const parseDiff = require("parse-diff");
+const {MAX_DIFF_BYTES} = require("../../../../packages/scanner-contract/constants");
 
 /**
  * Extracts file-level stats from a raw git diff.
@@ -35,7 +36,7 @@ function parseDiffStats(diffText) {
  * @param {number} maxBytes
  * @returns {string}
  */
-function truncateDiff(diffText, maxBytes = 12000) {
+function truncateDiff(diffText, maxBytes = MAX_DIFF_BYTES) {
   if (diffText.length <= maxBytes) return diffText;
   return diffText.slice(0, maxBytes) + "\n\n[diff truncated]";
 }

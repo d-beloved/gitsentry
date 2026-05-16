@@ -409,29 +409,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@gitsentry/backend@workspace:apps/backend":
-  version: 0.0.0-use.local
-  resolution: "@gitsentry/backend@workspace:apps/backend"
-  dependencies:
-    "@google/generative-ai": "npm:^0.21.0"
-    "@octokit/app": "npm:^13.1.8"
-    "@supabase/supabase-js": "npm:^2.47.0"
-    bull: "npm:^4.16.0"
-    dotenv: "npm:^16.4.0"
-    express: "npm:^4.21.0"
-    express-rate-limit: "npm:^8.5.1"
-    jest: "npm:^30.4.2"
-    nodemon: "npm:^3.1.0"
-    parse-diff: "npm:^0.11.1"
-  languageName: unknown
-  linkType: soft
-
-"@gitsentry/shared@workspace:packages/shared":
-  version: 0.0.0-use.local
-  resolution: "@gitsentry/shared@workspace:packages/shared"
-  languageName: unknown
-  linkType: soft
-
 "@google/generative-ai@npm:^0.21.0":
   version: 0.21.0
   resolution: "@google/generative-ai@npm:0.21.0"
@@ -2604,6 +2581,17 @@ __metadata:
 "gitsentry@workspace:.":
   version: 0.0.0-use.local
   resolution: "gitsentry@workspace:."
+  dependencies:
+    "@google/generative-ai": "npm:^0.21.0"
+    "@octokit/app": "npm:^13.1.8"
+    "@supabase/supabase-js": "npm:^2.47.0"
+    bull: "npm:^4.16.0"
+    dotenv: "npm:^16.4.0"
+    express: "npm:^4.21.0"
+    express-rate-limit: "npm:^8.5.1"
+    jest: "npm:^30.4.2"
+    nodemon: "npm:^3.1.0"
+    parse-diff: "npm:^0.11.1"
   languageName: unknown
   linkType: soft
 
