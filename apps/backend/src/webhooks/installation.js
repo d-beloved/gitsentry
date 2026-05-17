@@ -5,7 +5,6 @@ async function handleInstallation(payload) {
   const account = installation.account;
 
   if (action === "created" || action === "unsuspend") {
-    // Upsert the org/user account the app was installed on
     const { data: org, error: orgErr } = await supabase
       .from("orgs")
       .upsert(
@@ -33,6 +32,10 @@ async function handleInstallation(payload) {
       );
 
     if (installErr) throw new Error(`[installation] record upsert failed: ${installErr.message}`);
+
+    // Repos are created at scan time (first push/PR), not at installation.
+    // The installations record above is sufficient for the dashboard to surface
+    // this org's repos once scanning begins.
 
     console.log(
       `[installation] installed on ${account.login} (${account.type}) by github:${sender.id} — install_id=${installation.id}`
