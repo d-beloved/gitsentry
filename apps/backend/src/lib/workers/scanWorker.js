@@ -3,7 +3,7 @@ const { postPRReview, postCommitComment, postUpgradeComment } = require("../gith
 const { saveFindings, updateScanStatus, getOrgByRepoId, incrementScanCount } = require("../../db/queries");
 const { notifyIfNeeded } = require("../notifier");
 
-const FREE_SCAN_LIMIT = 50;
+const FREE_SCAN_LIMIT = 10;
 
 /**
  * Core scan processor — called either directly (inline fallback) or by Bull.

@@ -243,7 +243,7 @@ async function postUpgradeComment(
   const body = [
     `## 🔐 ${PRODUCT_NAME} — Free Tier Limit Reached`,
     "",
-    "You've used all **50 free scans** for this month. This commit was not scanned.",
+    "You've used all **10 free scans** for this month. This commit was not scanned.",
     "",
     `**[Upgrade to Pro](${PRODUCT_URL}/dashboard/billing)** for unlimited scans, private repo support, and on-demand security sweeps.`,
     "",
