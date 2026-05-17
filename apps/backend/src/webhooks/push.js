@@ -1,5 +1,5 @@
 const { getPushDiff } = require("../lib/github");
-const { saveScan } = require("../db/queries");
+const { saveScan, getOrgByInstallationId } = require("../db/queries");
 const { parseDiffStats, truncateDiff } = require("../lib/differ");
 const { scanQueue } = require("../lib/queue");
 const { processScanJob } = require("../lib/workers/scanWorker");
@@ -17,6 +17,15 @@ async function handlePush(payload) {
     return;
   }
 
+  // Private repos require a paid plan — skip silently on free
+  if (repo.private) {
+    const org = await getOrgByInstallationId(installationId);
+    if (!org || org.plan === "free") {
+      console.log(`[push] Skipping private repo ${repo.full_name} — free plan`);
+      return;
+    }
+  }
+
   const branch = ref.replace("refs/heads/", "");
   const isMain = MAIN_BRANCHES.includes(branch);
   const latestCommit = commits[commits.length - 1];
@@ -32,6 +41,7 @@ async function handlePush(payload) {
     repoGithubId: repo.id,
     repoOwner: { githubId: repo.owner.id, login: repo.owner.login, avatarUrl: repo.owner.avatar_url },
     installationId,
+    isPrivate: repo.private ?? false,
     triggerType,
     triggerRef: branch,
     commitSha: latestCommit.id,

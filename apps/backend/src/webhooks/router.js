@@ -3,6 +3,9 @@ const crypto = require("crypto");
 const { handlePR } = require("./pullRequest");
 const { handlePush } = require("./push");
 const { handleInstallation } = require("./installation");
+const { handleInstallationRepositories } = require("./installationRepositories");
+const { handleRepository } = require("./repository");
+const { handleGithubAppAuthorization } = require("./githubAppAuthorization");
 
 const router = express.Router();
 
@@ -38,6 +41,9 @@ router.post("/", async (req, res) => {
     if (event === "pull_request") await handlePR(req.body);
     if (event === "push") await handlePush(req.body);
     if (event === "installation") await handleInstallation(req.body);
+    if (event === "installation_repositories") await handleInstallationRepositories(req.body);
+    if (event === "repository") await handleRepository(req.body);
+    if (event === "github_app_authorization") await handleGithubAppAuthorization(req.body);
   } catch (err) {
     console.error(`[webhook] error processing event=${event} delivery=${delivery}:`, err);
   }

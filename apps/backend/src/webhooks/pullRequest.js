@@ -1,5 +1,5 @@
 const { getDiff } = require("../lib/github");
-const { saveScan } = require("../db/queries");
+const { saveScan, getOrgByInstallationId } = require("../db/queries");
 const { parseDiffStats, truncateDiff } = require("../lib/differ");
 const { scanQueue } = require("../lib/queue");
 const { processScanJob } = require("../lib/workers/scanWorker");
@@ -15,6 +15,15 @@ async function handlePR(payload) {
     return;
   }
 
+  // Private repos require a paid plan — skip silently on free
+  if (repo.private) {
+    const org = await getOrgByInstallationId(installationId);
+    if (!org || org.plan === "free") {
+      console.log(`[PR] Skipping private repo ${repo.full_name} — free plan`);
+      return;
+    }
+  }
+
   const diff = await getDiff(repo.full_name, pr.number, installationId);
   if (!diff || diff.length < 10) return;
 
@@ -25,6 +34,7 @@ async function handlePR(payload) {
     repoGithubId: repo.id,
     repoOwner: { githubId: repo.owner.id, login: repo.owner.login, avatarUrl: repo.owner.avatar_url },
     installationId,
+    isPrivate: repo.private ?? false,
     triggerType: "pull_request",
     triggerRef: String(pr.number),
     commitSha: pr.head.sha,

@@ -21,10 +21,11 @@ async function getOrCreateOrg({ githubId, login, avatarUrl }) {
  * Upserts a repo row and returns the full row.
  * Pass orgId to link the repo to its owner org.
  */
-async function getOrCreateRepo(repoFullName, repoGithubId, orgId = null, installationId = null) {
-  const upsertData = { github_id: repoGithubId, full_name: repoFullName };
+async function getOrCreateRepo(repoFullName, repoGithubId, orgId = null, installationId = null, isPrivate = false, isActive = null) {
+  const upsertData = { github_id: repoGithubId, full_name: repoFullName, is_private: isPrivate };
   if (orgId) upsertData.org_id = orgId;
   if (installationId) upsertData.installation_id = installationId;
+  if (isActive !== null) upsertData.is_active = isActive;
 
   const { data, error } = await supabase
     .from("repos")
@@ -34,6 +35,19 @@ async function getOrCreateRepo(repoFullName, repoGithubId, orgId = null, install
 
   if (error) throw new Error(`getOrCreateRepo: ${error.message}`);
   return data;
+}
+
+/**
+ * Looks up the org (with plan) linked to a GitHub App installation ID.
+ * Used to check plan before processing webhooks for private repos.
+ */
+async function getOrgByInstallationId(installationId) {
+  const { data } = await supabase
+    .from("installations")
+    .select("org_id, orgs(id, plan)")
+    .eq("github_install_id", installationId)
+    .single();
+  return data?.orgs ?? null;
 }
 
 // ─── Scans ────────────────────────────────────────────────────────────────────
@@ -48,6 +62,7 @@ async function saveScan({
   repoGithubId,
   repoOwner,
   installationId = null,
+  isPrivate = false,
   triggerType,
   triggerRef,
   commitSha,
@@ -65,7 +80,7 @@ async function saveScan({
     orgId = org.id;
   }
 
-  const repo = await getOrCreateRepo(repoFullName, repoGithubId, orgId, installationId);
+  const repo = await getOrCreateRepo(repoFullName, repoGithubId, orgId, installationId, isPrivate, true);
 
   const { data, error } = await supabase
     .from("scans")
@@ -308,6 +323,7 @@ module.exports = {
   saveSweepScan,
   incrementSweepTrials,
   getOrgByRepoId,
+  getOrgByInstallationId,
   incrementScanCount,
   updateOrgPlan,
   getOrgByPaddleCustomer,
