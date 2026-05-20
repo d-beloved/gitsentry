@@ -53,6 +53,29 @@ async function getOrgByInstallationId(installationId) {
 // ─── Scans ────────────────────────────────────────────────────────────────────
 
 /**
+ * Returns true if a scan already exists for this repo+commit.
+ * Used to deduplicate retried webhook deliveries.
+ */
+async function scanExistsForCommit(repoFullName, commitSha) {
+  const { data: repo } = await supabase
+    .from("repos")
+    .select("id")
+    .eq("full_name", repoFullName)
+    .single();
+
+  if (!repo) return false;
+
+  const { data } = await supabase
+    .from("scans")
+    .select("id")
+    .eq("repo_id", repo.id)
+    .eq("commit_sha", commitSha)
+    .limit(1);
+
+  return !!(data?.length);
+}
+
+/**
  * Inserts a new scan row and returns it.
  * repoOwner: { githubId, login, avatarUrl } — the GitHub account that owns the repo
  *   (individual user or org). Used to populate org_id on the repo row.
@@ -315,6 +338,7 @@ async function getOrgByPaddleCustomer(paddleCustomerId) {
 }
 
 module.exports = {
+  scanExistsForCommit,
   saveScan,
   saveFindings,
   updateScanStatus,

@@ -1,5 +1,5 @@
 const { getDiff } = require("../lib/github");
-const { saveScan, getOrgByInstallationId } = require("../db/queries");
+const { saveScan, getOrgByInstallationId, scanExistsForCommit } = require("../db/queries");
 const { parseDiffStats, truncateDiff } = require("../lib/differ");
 const { scanQueue } = require("../lib/queue");
 const { processScanJob } = require("../lib/workers/scanWorker");
@@ -7,7 +7,7 @@ const { processScanJob } = require("../lib/workers/scanWorker");
 async function handlePR(payload) {
   const { action, pull_request: pr, repository: repo, installation } = payload;
 
-  if (!["opened", "synchronize"].includes(action)) return;
+  if (!["opened", "synchronize", "reopened"].includes(action)) return;
 
   const installationId = installation?.id;
   if (!installationId) {
@@ -15,13 +15,27 @@ async function handlePR(payload) {
     return;
   }
 
-  // Private repos require a paid plan — skip silently on free
-  if (repo.private) {
-    const org = await getOrgByInstallationId(installationId);
-    if (!org || org.plan === "free") {
-      console.log(`[PR] Skipping private repo ${repo.full_name} — free plan`);
-      return;
-    }
+  // Fetch org once for both plan gates below
+  let org;
+  if (repo.private || action === "synchronize") {
+    org = await getOrgByInstallationId(installationId);
+  }
+
+  // Private repos require a paid plan
+  if (repo.private && (!org || org.plan === "free")) {
+    console.log(`[PR] Skipping private repo ${repo.full_name} — free plan`);
+    return;
+  }
+
+  // Synchronize scans only run for Pro — free and starter have no check run to update
+  if (action === "synchronize" && (!org || org.plan !== "pro")) {
+    console.log(`[PR] Skipping synchronize for ${repo.full_name} — ${org?.plan ?? "free"} plan`);
+    return;
+  }
+
+  if (await scanExistsForCommit(repo.full_name, pr.head.sha)) {
+    console.log(`[PR] Skipping duplicate delivery for ${repo.full_name} commit ${pr.head.sha}`);
+    return;
   }
 
   const diff = await getDiff(repo.full_name, pr.number, installationId);
