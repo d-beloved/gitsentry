@@ -1,7 +1,7 @@
 const express = require("express");
 const crypto = require("crypto");
 const { handlePR } = require("./pullRequest");
-const { handlePush } = require("./push");
+const { handleCheckRun } = require("./checkRun");
 const { handleInstallation } = require("./installation");
 const { handleInstallationRepositories } = require("./installationRepositories");
 const { handleRepository } = require("./repository");
@@ -39,7 +39,7 @@ router.post("/", async (req, res) => {
 
   try {
     if (event === "pull_request") await handlePR(req.body);
-    if (event === "push") await handlePush(req.body);
+    if (event === "check_run") await handleCheckRun(req.body);
     if (event === "installation") await handleInstallation(req.body);
     if (event === "installation_repositories") await handleInstallationRepositories(req.body);
     if (event === "repository") await handleRepository(req.body);
