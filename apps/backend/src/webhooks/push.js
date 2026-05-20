@@ -4,12 +4,15 @@ const { parseDiffStats, truncateDiff } = require("../lib/differ");
 const { scanQueue } = require("../lib/queue");
 const { processScanJob } = require("../lib/workers/scanWorker");
 
-const {MAIN_BRANCHES} = require("../../../../packages/scanner-contract/constants");
-
 async function handlePush(payload) {
   const { ref, commits, repository: repo, pusher, installation } = payload;
 
   if (!ref.startsWith("refs/heads/") || !commits?.length) return;
+
+  // Only scan the default branch — PR events (opened/synchronize) handle branch work
+  const defaultBranch = repo.default_branch ?? "main";
+  const branch = ref.replace("refs/heads/", "");
+  if (branch !== defaultBranch) return;
 
   const installationId = installation?.id;
   if (!installationId) {
@@ -26,15 +29,13 @@ async function handlePush(payload) {
     }
   }
 
-  const branch = ref.replace("refs/heads/", "");
-  const isMain = MAIN_BRANCHES.includes(branch);
   const latestCommit = commits[commits.length - 1];
 
   const diff = await getPushDiff(repo.full_name, latestCommit.id, installationId);
   if (!diff || diff.length < 10) return;
 
   const { filesChanged, linesAdded } = parseDiffStats(diff);
-  const triggerType = isMain ? "push_main" : "push_branch";
+  const triggerType = "push_main";
 
   const scan = await saveScan({
     repoFullName: repo.full_name,
