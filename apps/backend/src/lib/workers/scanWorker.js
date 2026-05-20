@@ -1,9 +1,9 @@
 const { analyzeCode } = require("../ai");
-const { postPRReview, postCommitComment, postUpgradeComment } = require("../github");
+const { postPRReview, postCommitComment, postCheckRun, postUpgradeComment } = require("../github");
 const { saveFindings, updateScanStatus, getOrgByRepoId, incrementScanCount } = require("../../db/queries");
 const { notifyIfNeeded } = require("../notifier");
 
-const FREE_SCAN_LIMIT = 10;
+const SCAN_LIMITS = { free: 10, starter: 50 }; // pro = unlimited (no key)
 
 /**
  * Core scan processor — called either directly (inline fallback) or by Bull.
@@ -25,13 +25,16 @@ async function processScanJob(data) {
   const startedAt = Date.now();
 
   try {
-    // Plan gate: check free-tier scan limit before running AI
+    // Plan gate: enforce monthly scan limits (free: 10, starter: 50, pro: unlimited)
     const org = await getOrgByRepoId(repoId);
-    if (org && org.plan === "free") {
+    const isPro = org?.plan === "pro";
+    const scanLimit = SCAN_LIMITS[org?.plan] ?? SCAN_LIMITS.free;
+
+    if (org && !isPro) {
       const currentMonth = new Date().toISOString().slice(0, 7);
       const scansThisMonth = org.scan_month === currentMonth ? (org.scan_count_month || 0) : 0;
-      if (scansThisMonth >= FREE_SCAN_LIMIT) {
-        console.log(`[worker] Scan ${scanId} skipped: free tier limit (${FREE_SCAN_LIMIT}/month) reached`);
+      if (scansThisMonth >= scanLimit) {
+        console.log(`[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`);
         await updateScanStatus(scanId, [], 0, "failed");
         postUpgradeComment(repoFullName, { prNumber, commitSha }, installationId).catch((err) =>
           console.error("[worker] upgrade comment failed:", err.message)
@@ -42,8 +45,9 @@ async function processScanJob(data) {
 
     const { issues, summary } = await analyzeCode(diff, context);
 
+    let findings = [];
     if (issues.length > 0) {
-      const findings = await saveFindings(scanId, issues);
+      findings = await saveFindings(scanId, issues);
 
       if (prNumber != null) {
         await postPRReview(repoFullName, prNumber, findings, summary, scanId, installationId);
@@ -52,6 +56,13 @@ async function processScanJob(data) {
       }
 
       await notifyIfNeeded(repoId, repoFullName, findings, triggerType, branch, scanId);
+    }
+
+    // Check Run — Pro plan only; free users never receive check runs
+    if (prNumber != null && commitSha && isPro) {
+      postCheckRun(repoFullName, commitSha, findings, installationId).catch((err) =>
+        console.error("[worker] check run failed:", err.message)
+      );
     }
 
     await updateScanStatus(scanId, issues, Date.now() - startedAt);

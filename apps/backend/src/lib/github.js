@@ -229,6 +229,56 @@ async function getSweepDiff(repoFullName, branch, installationId) {
 }
 
 /**
+ * Post a GitHub Check Run after a PR scan.
+ *
+ * Free plan: conclusion is always "neutral" — findings are visible but PRs are never blocked.
+ * Pro plan: conclusion is "failure" when critical or high findings exist, enabling branch protection.
+ *
+ * Users configure blocking by adding "Gitsentry Security Scan" as a required status check
+ * in their repo's branch protection settings (Settings → Branches → Require status checks).
+ */
+async function postCheckRun(repoFullName, headSha, findings, installationId) {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  const total = findings.length;
+  const criticalCount = findings.filter((f) => f.severity === "critical").length;
+  const highCount = findings.filter((f) => f.severity === "high").length;
+  const blocking = criticalCount > 0 || highCount > 0;
+
+  let conclusion, title, summary;
+
+  if (total === 0) {
+    conclusion = "success";
+    title = "No security issues found";
+    summary = "Gitsentry.dev scanned this PR and found no security issues.";
+  } else if (blocking) {
+    conclusion = "failure";
+    const parts = [];
+    if (criticalCount > 0) parts.push(`${criticalCount} critical`);
+    if (highCount > 0) parts.push(`${highCount} high`);
+    title = `${total} security issue${total !== 1 ? "s" : ""} found (${parts.join(", ")})`;
+    summary =
+      "Gitsentry.dev found blocking security issues. Resolve critical and high severity findings before merging.\n\n" +
+      "To dismiss a false positive, visit your [Gitsentry dashboard](" + PRODUCT_URL + "/dashboard).";
+  } else {
+    conclusion = "neutral";
+    title = `${total} low-severity finding${total !== 1 ? "s" : ""} — informational`;
+    summary = `Gitsentry.dev found ${total} medium/low severity finding${total !== 1 ? "s" : ""}. These are informational and do not block merging.`;
+  }
+
+  await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
+    owner,
+    repo,
+    name: "Gitsentry Security Scan",
+    head_sha: headSha,
+    status: "completed",
+    conclusion,
+    output: { title, summary },
+  });
+}
+
+/**
  * Post an upgrade-prompt comment when the free-tier scan limit is reached.
  * Handles both PR comments (prNumber set) and commit comments (commitSha set).
  */
@@ -279,5 +329,6 @@ module.exports = {
   getSweepDiff,
   postPRReview,
   postCommitComment,
+  postCheckRun,
   postUpgradeComment,
 };
