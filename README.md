@@ -1,6 +1,6 @@
 # Gitsentry.dev
 
-> AI-powered security scanner that watches every Git event: PRs, branch pushes, and direct commits to main, and catches vulnerabilities in your code before they reach production.
+> AI-powered security scanner for pull requests. Catches vulnerabilities in your code diff before it reaches production — and can block merges until findings are resolved.
 
 **[MIT License](LICENSE)** · **[Install GitHub App](https://github.com/apps/gitsentry)**
 
@@ -14,11 +14,13 @@ Engineering teams ship code using AI tools (Cursor, Copilot, Claude Code, etc.) 
 
 ## The Solution
 
-Gitsentry.dev installs as a GitHub App. It listens to every `pull_request` and `push` event: PRs, feature branches, and direct pushes to main. On each event it runs an AI security analysis and surfaces findings exactly where developers already work: **as GitHub PR comments and commit comments**.
+Gitsentry.dev installs as a GitHub App. It listens to `pull_request` events — when a PR is opened, updated, or reopened — runs an AI security analysis on the full PR diff, and surfaces findings exactly where developers already work: **as GitHub PR review comments**.
 
 ```
-PR opened → webhook → AI analysis → GitHub review comment posted
+PR opened / updated → webhook → AI analysis → GitHub review comment + check run posted
 ```
+
+On Pro, the check run conclusion is set to `failure` when critical or high severity findings exist. Pair it with a GitHub branch protection rule and merges are blocked until the findings are resolved.
 
 ## Install
 
@@ -73,8 +75,8 @@ Gitsentry.dev is open-source security infrastructure you can run yourself. Use t
 4. Grant these permissions:
    - **Repository → Pull requests**: Read & write
    - **Repository → Contents**: Read
-   - **Repository → Commit statuses**: Read & write
-5. Subscribe to events: `Pull request`, `Push`
+   - **Repository → Checks**: Read & write (required for check runs and merge blocking)
+5. Subscribe to events: `Pull request`
 
 ### 2. Configure environment
 
@@ -99,6 +101,23 @@ yarn dev
 ```bash
 npx smee -u https://smee.io/your-channel -t http://localhost:3000/webhook
 ```
+
+---
+
+## Blocking merges on findings (Pro)
+
+Gitsentry posts a **GitHub Check Run** named `Gitsentry Security Scan` on every PR scan. On a Pro plan, the check conclusion is set to `failure` when critical or high severity findings are present. You can require this check in your branch protection rules to prevent merging until findings are resolved.
+
+**To enable merge blocking for a repository:**
+
+1. Go to your repo → **Settings → Branches**
+2. Edit (or create) the protection rule for your default branch (e.g. `main`)
+3. Enable **"Require status checks to pass before merging"**
+4. Search for and add **`Gitsentry Security Scan`** as a required check
+
+> The check name appears in the search only after Gitsentry has run at least one scan on a PR in that repository.
+
+On the free plan the check run is always `neutral` — findings are visible in the PR but merges are never blocked. Upgrade to Pro to enable blocking.
 
 ---
 
