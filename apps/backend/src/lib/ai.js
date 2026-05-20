@@ -266,16 +266,4 @@ RULES:
 `;
 }
 
-// ─── Claude drop-in (swap when ready) ────────────────────────────────────────
-// async function analyzeCode(diff, context) {
-//   const Anthropic = require('@anthropic-ai/sdk');
-//   const client = new Anthropic();
-//   const message = await client.messages.create({
-//     model: 'claude-sonnet-4-5',
-//     max_tokens: 2048,
-//     messages: [{ role: 'user', content: buildPrompt(diff, context) }]
-//   });
-//   return JSON.parse(message.content[0].text);
-// }
-
 module.exports = {analyzeCode, analyzeSecuritySweep};
