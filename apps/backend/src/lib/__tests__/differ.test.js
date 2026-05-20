@@ -1,4 +1,4 @@
-const { parseDiffStats, truncateDiff } = require("../differ");
+const { parseDiffStats, truncateDiff, extractAdditions } = require("../differ");
 
 const SINGLE_FILE_DIFF = `\
 diff --git a/src/app.js b/src/app.js
@@ -53,6 +53,76 @@ describe("parseDiffStats", () => {
   });
 });
 
+const LOCK_FILE_DIFF = `\
+diff --git a/package-lock.json b/package-lock.json
+index 0000000..1234567
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -0,0 +1,2 @@
++{
++  "lockfileVersion": 3
+`;
+
+const MIXED_DIFF = `\
+diff --git a/src/app.js b/src/app.js
+index 0000000..1234567
+--- a/src/app.js
++++ b/src/app.js
+@@ -1,2 +1,3 @@
+ const express = require('express');
+-const old = 1;
++const app = express();
++module.exports = app;
+diff --git a/package-lock.json b/package-lock.json
+index 0000000..abcdefg
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -0,0 +1,1 @@
++{ "lockfileVersion": 3 }
+`;
+
+describe("extractAdditions", () => {
+  test("returns empty string for empty input", () => {
+    expect(extractAdditions("")).toBe("");
+    expect(extractAdditions(null)).toBe("");
+    expect(extractAdditions(undefined)).toBe("");
+  });
+
+  test("extracts only added lines with file headers and line numbers", () => {
+    const result = extractAdditions(SINGLE_FILE_DIFF);
+    expect(result).toContain("=== src/app.js ===");
+    expect(result).toContain("L1: const express = require('express');");
+    expect(result).toContain("L2: const app = express();");
+    expect(result).toContain("L3: module.exports = app;");
+  });
+
+  test("omits removed lines", () => {
+    const result = extractAdditions(MIXED_DIFF);
+    expect(result).not.toContain("const old = 1");
+  });
+
+  test("omits context lines", () => {
+    const result = extractAdditions(MIXED_DIFF);
+    expect(result).not.toContain("const express = require");
+  });
+
+  test("skips lock files", () => {
+    const result = extractAdditions(LOCK_FILE_DIFF);
+    expect(result).toBe("");
+  });
+
+  test("skips lock files in a mixed diff but includes other files", () => {
+    const result = extractAdditions(MIXED_DIFF);
+    expect(result).toContain("=== src/app.js ===");
+    expect(result).not.toContain("package-lock.json");
+  });
+
+  test("truncates output at maxBytes and appends marker", () => {
+    const result = extractAdditions(MULTI_FILE_DIFF, 20);
+    expect(result).toContain("[ADDITIONS TRUNCATED]");
+  });
+});
+
 describe("truncateDiff", () => {
   test("returns the diff unchanged when under the byte limit", () => {
     const diff = "short diff";
@@ -71,11 +141,11 @@ describe("truncateDiff", () => {
     expect(result.endsWith("[diff truncated]")).toBe(true);
   });
 
-  test("uses the default 12000-byte limit when maxBytes is omitted", () => {
+  test("uses the default 200000-byte limit when maxBytes is omitted", () => {
     const short = "x".repeat(100);
     expect(truncateDiff(short)).toBe(short);
 
-    const long = "x".repeat(13000);
+    const long = "x".repeat(201_000);
     expect(truncateDiff(long)).toContain("[diff truncated]");
   });
 });

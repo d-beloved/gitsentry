@@ -59,7 +59,7 @@ const FINDING_CATEGORIES = Object.keys(CATEGORY_LABELS);
 
 const MAIN_BRANCHES = ["main", "master"];
 
-const MAX_DIFF_BYTES = 12000;
+const MAX_DIFF_BYTES = 200_000;
 
 /** Hosted product URL (used in GitHub review comment links). */
 const GITSENTRY_URL = "https://gitsentry.dev";

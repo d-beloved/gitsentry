@@ -1,5 +1,5 @@
 const {GoogleGenerativeAI} = require("@google/generative-ai");
-const {MAX_DIFF_BYTES} = require("../../../../packages/scanner-contract/constants");
+const {extractAdditions} = require("./differ");
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
@@ -125,7 +125,8 @@ async function analyzeCode(diff, context, options = {}) {
 
   const mode =
     options.mode === "security_sweep" ? "security_sweep" : "diff_scan";
-  const prompt = buildPrompt(diff, context, mode);
+  const input = mode === "diff_scan" ? extractAdditions(diff) : diff;
+  const prompt = buildPrompt(input, context, mode);
   const result = await model.generateContent(prompt);
   let text = result.response.text();
 
@@ -168,11 +169,11 @@ function categoryList(categories) {
     .join("\n");
 }
 
-function buildPrompt(diff, context, mode = "diff_scan") {
+function buildPrompt(input, context, mode = "diff_scan") {
   const isSweep = mode === "security_sweep";
   const inputLabel = isSweep
     ? "CODEBASE, DESIGN NOTES, OR SELECTED CONTEXT TO AUDIT"
-    : "DIFF TO ANALYSE";
+    : "ADDED LINES (additions only, grouped by file — format: L<num>: <code>)";
   const scopeRules = isSweep
     ? `
 SECURITY SWEEP MODE:
@@ -183,9 +184,10 @@ SECURITY SWEEP MODE:
 `
     : `
 DIFF SCAN MODE:
-- Focus on vulnerabilities introduced or exposed by this diff.
+- You are seeing only the lines added in this PR, grouped by file. Deletions are omitted.
+- Focus on vulnerabilities introduced by these additions.
 - Prefer concrete, actionable findings over speculative architecture advice.
-- If a broader risk is visible but not proven in the diff, only report it when the changed code creates a realistic exploit path.
+- Only report a broader risk when the added code itself creates a realistic exploit path.
 `;
 
   return `
@@ -215,7 +217,7 @@ THREAT MODELING CHECKLIST:
 - Sensitive assets: credentials, tokens, PII, private repo code, scan findings, billing state, admin permissions.
 
 ${inputLabel}:
-${diff.length > MAX_DIFF_BYTES ? diff.slice(0, MAX_DIFF_BYTES) + "\n\n[DIFF TRUNCATED DUE TO SIZE]" : diff}
+${input}
 
 RESPONSE FORMAT — return ONLY valid JSON, no markdown, no explanation:
 {
