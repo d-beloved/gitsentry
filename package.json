@@ -7,7 +7,7 @@
   "main": "apps/backend/src/index.ts",
   "scripts": {
     "dev": "nodemon --exec tsx apps/backend/src/index.ts",
-    "start": "tsx apps/backend/src/index.ts",
+    "start": "node apps/backend/dist/apps/backend/src/index.js",
     "build": "tsc --project apps/backend/tsconfig.json",
     "test": "jest",
     "typecheck": "tsc --project apps/backend/tsconfig.json --noEmit"
@@ -24,16 +24,15 @@
     "parse-diff": "^0.11.1"
   },
   "devDependencies": {
-    "@types/bull": "^4.10.0",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^4.17.21",
-    "@types/jest": "^30.0.0",
-    "@types/node": "^20.0.0",
+    "@types/cors": "2.8.19",
+    "@types/express": "4.17.25",
+    "@types/jest": "30.0.0",
+    "@types/node": "20.19.41",
     "jest": "^30.4.2",
     "nodemon": "^3.1.0",
     "ts-jest": "^29.2.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.4.0"
+    "typescript": "5.9.3"
   },
   "jest": {
     "testEnvironment": "node",
@@ -47,10 +46,14 @@
       "^.+\\.tsx?$": [
         "ts-jest",
         {
-          "tsconfig": "apps/backend/tsconfig.json"
+          "tsconfig": "apps/backend/tsconfig.test.json"
         }
       ]
     }
+  },
+  "resolutions": {
+    "uuid": "^11.0.0",
+    "babel-plugin-istanbul": "^8.0.0"
   },
   "engines": {
     "node": ">=20.0.0"
