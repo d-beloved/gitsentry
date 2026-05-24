@@ -1,4 +1,4 @@
-const { parseDiffStats, truncateDiff, extractAdditions } = require("../differ");
+import { parseDiffStats, truncateDiff, extractAdditions } from "../differ";
 
 const SINGLE_FILE_DIFF = `\
 diff --git a/src/app.js b/src/app.js

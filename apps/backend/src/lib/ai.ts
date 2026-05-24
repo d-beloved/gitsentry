@@ -1,9 +1,10 @@
-const {GoogleGenerativeAI} = require("@google/generative-ai");
-const {extractAdditions} = require("./differ");
+import { GoogleGenerativeAI } from "@google/generative-ai";
+import { extractAdditions } from "./differ";
+import type { AIAnalysisResult, ScanContext } from "../../../../packages/scanner-contract/types";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
 
-const CORE_CATEGORIES = [
+const CORE_CATEGORIES: [string, string][] = [
   ["hardcoded_secret", "API keys, tokens, passwords, private keys in code"],
   ["missing_auth", "New routes or endpoints with no authentication check"],
   ["sql_injection", "User input concatenated into SQL queries"],
@@ -25,7 +26,7 @@ const CORE_CATEGORIES = [
   ["open_redirect", "User-controlled redirect URLs"],
 ];
 
-const ADVERSARIAL_CATEGORIES = [
+const ADVERSARIAL_CATEGORIES: [string, string][] = [
   ["csrf", "State-changing browser requests without CSRF protection"],
   [
     "weak_session_management",
@@ -110,66 +111,59 @@ const ADVERSARIAL_CATEGORIES = [
 
 const ALL_CATEGORIES = [...CORE_CATEGORIES, ...ADVERSARIAL_CATEGORIES];
 
-/**
- * Analyzes a code diff for security vulnerabilities.
- * @param {string} diff - The raw git diff text
- * @param {object} context - { repo, branch, triggerType, author }
- * @param {object} [options] - { mode?: 'diff_scan' | 'security_sweep' }
- * @returns {Promise<{issues: import('../../../../packages/scanner-contract/types').Finding[], summary: string}>}
- */
-async function analyzeCode(diff, context, options = {}) {
+export async function analyzeCode(
+  diff: string,
+  context: ScanContext,
+  options: { mode?: "diff_scan" | "security_sweep" } = {},
+): Promise<AIAnalysisResult> {
   const model = genAI.getGenerativeModel({
     model: "gemini-2.5-flash",
-    generationConfig: {responseMimeType: "application/json"},
+    generationConfig: { responseMimeType: "application/json" },
   });
 
-  const mode =
-    options.mode === "security_sweep" ? "security_sweep" : "diff_scan";
+  const mode = options.mode === "security_sweep" ? "security_sweep" : "diff_scan";
   const input = mode === "diff_scan" ? extractAdditions(diff) : diff;
   const prompt = buildPrompt(input, context, mode);
   const result = await model.generateContent(prompt);
-  let text = result.response.text();
+  const text = result.response.text();
 
   try {
-    // LLMs sometimes wrap JSON in markdown blocks despite instructions
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     const cleanJson = jsonMatch ? jsonMatch[0] : text;
 
-    const parsed = JSON.parse(cleanJson);
-    // Ensure we always return the expected shape
+    const parsed = JSON.parse(cleanJson) as AIAnalysisResult;
     return {
       issues: Array.isArray(parsed.issues) ? parsed.issues : [],
       summary: parsed.summary || "Analysis complete.",
       scan_mode: mode,
-      threat_model: parsed.threat_model || {},
-      attack_chains: Array.isArray(parsed.attack_chains)
-        ? parsed.attack_chains
-        : [],
-      recommendations: Array.isArray(parsed.recommendations)
-        ? parsed.recommendations
-        : [],
+      threat_model: parsed.threat_model ?? {},
+      attack_chains: Array.isArray(parsed.attack_chains) ? parsed.attack_chains : [],
+      recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
     };
   } catch (e) {
     console.error("[ai] Response parse error:", e);
-    return {issues: [], summary: "Analysis failed — could not parse response."};
+    return { issues: [], summary: "Analysis failed — could not parse response." };
   }
 }
 
-function analyzeSecuritySweep(input, context) {
+export function analyzeSecuritySweep(
+  input: string,
+  context: Omit<ScanContext, "triggerType">,
+): Promise<AIAnalysisResult> {
   return analyzeCode(
     input,
-    {...context, triggerType: "security_sweep"},
-    {mode: "security_sweep"},
+    { ...context, triggerType: "security_sweep" },
+    { mode: "security_sweep" },
   );
 }
 
-function categoryList(categories) {
+function categoryList(categories: [string, string][]): string {
   return categories
     .map(([key, description], index) => `${index + 1}. ${key} — ${description}`)
     .join("\n");
 }
 
-function buildPrompt(input, context, mode = "diff_scan") {
+function buildPrompt(input: string, context: ScanContext, mode: string): string {
   const isSweep = mode === "security_sweep";
   const inputLabel = isSweep
     ? "CODEBASE, DESIGN NOTES, OR SELECTED CONTEXT TO AUDIT"
@@ -267,5 +261,3 @@ RULES:
   medium = exploitable in specific conditions, low = best practice violation
 `;
 }
-
-module.exports = {analyzeCode, analyzeSecuritySweep};

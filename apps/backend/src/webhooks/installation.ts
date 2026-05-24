@@ -1,8 +1,13 @@
-const { supabase } = require("../db/client");
+import { supabase } from "../db/client";
 
-async function handleInstallation(payload) {
-  const { action, installation, sender, repositories = [] } = payload;
-  const account = installation.account;
+export async function handleInstallation(
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const action = payload.action as string;
+  const installation = payload.installation as Record<string, unknown>;
+  const sender = payload.sender as Record<string, unknown>;
+  const repositories = (payload.repositories as Array<Record<string, unknown>>) ?? [];
+  const account = installation.account as Record<string, unknown>;
 
   if (action === "created" || action === "unsuspend") {
     const { data: org, error: orgErr } = await supabase
@@ -11,9 +16,9 @@ async function handleInstallation(payload) {
         {
           github_id: account.id,
           login: account.login,
-          avatar_url: account.avatar_url ?? null,
+          avatar_url: (account.avatar_url as string | null) ?? null,
         },
-        { onConflict: "github_id" }
+        { onConflict: "github_id" },
       )
       .select("id")
       .single();
@@ -25,24 +30,22 @@ async function handleInstallation(payload) {
       .upsert(
         {
           github_install_id: installation.id,
-          org_id: org.id,
+          org_id: (org as { id: string }).id,
           installer_github_id: sender.id,
         },
-        { onConflict: "github_install_id" }
+        { onConflict: "github_install_id" },
       );
 
-    if (installErr) throw new Error(`[installation] record upsert failed: ${installErr.message}`);
+    if (installErr)
+      throw new Error(`[installation] record upsert failed: ${installErr.message}`);
 
-    // Seed repos from the installation payload so the dashboard shows them
-    // immediately — even before the first scan runs. Repos stay is_active=false
-    // until a real scan completes.
     if (repositories.length) {
       const repoRows = repositories.map((r) => ({
         github_id: r.id,
         full_name: r.full_name,
-        org_id: org.id,
+        org_id: (org as { id: string }).id,
         installation_id: installation.id,
-        is_private: r.private ?? false,
+        is_private: (r.private as boolean) ?? false,
         is_active: false,
       }));
 
@@ -50,11 +53,12 @@ async function handleInstallation(payload) {
         .from("repos")
         .upsert(repoRows, { onConflict: "github_id" });
 
-      if (repoErr) throw new Error(`[installation] repo upsert failed: ${repoErr.message}`);
+      if (repoErr)
+        throw new Error(`[installation] repo upsert failed: ${repoErr.message}`);
     }
 
     console.log(
-      `[installation] installed on ${account.login} (${account.type}) by github:${sender.id} — install_id=${installation.id}, repos=${repositories.length}`
+      `[installation] installed on ${account.login} (${account.type}) by github:${sender.id} — install_id=${installation.id}, repos=${repositories.length}`,
     );
   }
 
@@ -64,13 +68,15 @@ async function handleInstallation(payload) {
       .update({ is_active: false })
       .eq("installation_id", installation.id);
 
-    if (repoErr) throw new Error(`[installation] repo deactivation failed: ${repoErr.message}`);
+    if (repoErr)
+      throw new Error(`[installation] repo deactivation failed: ${repoErr.message}`);
 
-    console.log(`[installation] suspended on ${account.login} — install_id=${installation.id}`);
+    console.log(
+      `[installation] suspended on ${account.login} — install_id=${installation.id}`,
+    );
   }
 
   if (action === "deleted") {
-    // Look up org to find all repos (more reliable than installation_id on repos)
     const { data: orgData } = await supabase
       .from("orgs")
       .select("id")
@@ -81,21 +87,31 @@ async function handleInstallation(payload) {
       const { data: repoRows } = await supabase
         .from("repos")
         .select("id")
-        .eq("org_id", orgData.id);
+        .eq("org_id", (orgData as { id: string }).id);
 
       if (repoRows?.length) {
-        const repoIds = repoRows.map((r) => r.id);
+        const repoIds = (repoRows as Array<{ id: string }>).map((r) => r.id);
 
         // Archive anonymized findings to training corpus before deletion.
-        // We strip all identifying info (file path, repo/scan links, code snippets)
-        // and keep only the vulnerability signal (category, severity, descriptions).
+        // We strip all identifying info and keep only the vulnerability signal.
         const { data: findings } = await supabase
           .from("findings")
-          .select("severity, category, description, fix_suggestion, is_false_positive, file_path")
+          .select(
+            "severity, category, description, fix_suggestion, is_false_positive, file_path",
+          )
           .in("repo_id", repoIds);
 
         if (findings?.length) {
-          const corpusRows = findings.map((f) => ({
+          const corpusRows = (
+            findings as Array<{
+              severity: string;
+              category: string;
+              description: string;
+              fix_suggestion: string;
+              is_false_positive: boolean | null;
+              file_path: string | null;
+            }>
+          ).map((f) => ({
             severity: f.severity,
             category: f.category,
             description: f.description,
@@ -109,20 +125,23 @@ async function handleInstallation(payload) {
             .insert(corpusRows);
 
           if (corpusErr) {
-            // Non-fatal: log and continue with deletion
-            console.warn(`[installation] training corpus insert failed: ${corpusErr.message}`);
+            console.warn(
+              `[installation] training corpus insert failed: ${corpusErr.message}`,
+            );
           } else {
-            console.log(`[installation] archived ${corpusRows.length} anonymized findings to training corpus`);
+            console.log(
+              `[installation] archived ${corpusRows.length} anonymized findings to training corpus`,
+            );
           }
         }
 
-        // Delete repos — CASCADE removes scans and findings
         const { error: repoDelErr } = await supabase
           .from("repos")
           .delete()
           .in("id", repoIds);
 
-        if (repoDelErr) throw new Error(`[installation] repo deletion failed: ${repoDelErr.message}`);
+        if (repoDelErr)
+          throw new Error(`[installation] repo deletion failed: ${repoDelErr.message}`);
       }
     }
 
@@ -134,9 +153,7 @@ async function handleInstallation(payload) {
     if (error) throw new Error(`[installation] delete failed: ${error.message}`);
 
     console.log(
-      `[installation] deleted on ${account.login} — all data removed, findings anonymized`
+      `[installation] deleted on ${account.login} — all data removed, findings anonymized`,
     );
   }
 }
-
-module.exports = { handleInstallation };

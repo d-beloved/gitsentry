@@ -99,3 +99,16 @@ export interface ScanContext {
   triggerType: TriggerType;
   author: string | null;
 }
+
+export interface ScanJobData {
+  scanId: string;
+  repoId: string;
+  repoFullName: string;
+  diff: string;
+  context: ScanContext;
+  installationId: number;
+  prNumber?: number | null;
+  commitSha?: string | null;
+  branch: string;
+  triggerType: string;
+}

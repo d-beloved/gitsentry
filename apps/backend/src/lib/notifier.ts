@@ -1,19 +1,30 @@
-const { supabase } = require("../db/client");
-const { sortBySeverity, countBySeverity } = require("./scorer");
-const {
+import { supabase } from "../db/client";
+import { sortBySeverity, countBySeverity } from "./scorer";
+import {
   SEVERITY_EMOJI,
   SEVERITY_ORDER,
-  GITSENTRY_URL,
-} = require("../../../../packages/scanner-contract/constants");
+} from "../../../../packages/scanner-contract/constants";
+import type { Finding, Severity } from "../../../../packages/scanner-contract/types";
+import type { AlertConfigRow } from "../db/types";
 
-const PRODUCT_URL = GITSENTRY_URL;
-const FROM_EMAIL = "Gitsentry.dev <alerts@gitsentry.dev>";
+const FROM_EMAIL = process.env.FROM_EMAIL;
+const PRODUCT_URL = process.env.PRODUCT_URL;
 
 // ─── Slack ────────────────────────────────────────────────────────────────────
 
-async function postToSlack(webhookUrl, { repoFullName, issues, triggerType, branch, scanId }) {
+async function postToSlack(
+  webhookUrl: string,
+  params: {
+    repoFullName: string;
+    issues: Finding[];
+    triggerType: string;
+    branch: string;
+    scanId?: string;
+  },
+): Promise<void> {
+  const { repoFullName, issues, triggerType, branch, scanId } = params;
   const counts = countBySeverity(issues);
-  const countParts = ["critical", "high", "medium", "low"]
+  const countParts = (["critical", "high", "medium", "low"] as const)
     .filter((s) => counts[s] > 0)
     .map((s) => `${counts[s]} ${s}`);
 
@@ -23,7 +34,7 @@ async function postToSlack(webhookUrl, { repoFullName, issues, triggerType, bran
       ? ":warning: *Direct push to main*"
       : `Branch: \`${branch}\``;
 
-  const blocks = [
+  const blocks: unknown[] = [
     {
       type: "section",
       text: {
@@ -84,7 +95,17 @@ async function postToSlack(webhookUrl, { repoFullName, issues, triggerType, bran
 
 // ─── Email (Resend) ───────────────────────────────────────────────────────────
 
-async function sendAlertEmail(to, { repoFullName, issues, triggerType, branch, scanId }) {
+async function sendAlertEmail(
+  to: string,
+  params: {
+    repoFullName: string;
+    issues: Finding[];
+    triggerType: string;
+    branch: string;
+    scanId?: string;
+  },
+): Promise<void> {
+  const { repoFullName, issues, triggerType, branch, scanId } = params;
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     console.warn("[notifier] RESEND_API_KEY not set — skipping email alert");
@@ -94,7 +115,7 @@ async function sendAlertEmail(to, { repoFullName, issues, triggerType, branch, s
   const sorted = sortBySeverity(issues);
   const counts = countBySeverity(issues);
   const topSeverity = sorted[0]?.severity ?? "medium";
-  const topEmoji = SEVERITY_EMOJI[topSeverity] ?? "🔐";
+  const topEmoji = SEVERITY_EMOJI[topSeverity as Severity] ?? "🔐";
 
   const subject = `${topEmoji} ${counts.critical ? "CRITICAL: " : ""}${issues.length} security issue${issues.length !== 1 ? "s" : ""} found in ${repoFullName}`;
 
@@ -108,7 +129,7 @@ async function sendAlertEmail(to, { repoFullName, issues, triggerType, branch, s
       (issue) => `
       <tr>
         <td style="padding:10px 12px;border-bottom:1px solid #1f1f1f;white-space:nowrap">
-          ${SEVERITY_EMOJI[issue.severity] || ""} <strong>${issue.severity.toUpperCase()}</strong>
+          ${SEVERITY_EMOJI[issue.severity as Severity] || ""} <strong>${issue.severity.toUpperCase()}</strong>
         </td>
         <td style="padding:10px 12px;border-bottom:1px solid #1f1f1f;font-family:monospace;font-size:12px;color:#aaa">
           ${issue.file_path}${issue.line_number ? `:${issue.line_number}` : ""}
@@ -125,7 +146,7 @@ async function sendAlertEmail(to, { repoFullName, issues, triggerType, branch, s
               : ""
           }
         </td>
-      </tr>`
+      </tr>`,
     )
     .join("");
 
@@ -190,18 +211,14 @@ async function sendAlertEmail(to, { repoFullName, issues, triggerType, branch, s
 
 // ─── Main export ──────────────────────────────────────────────────────────────
 
-/**
- * Looks up alert config for the repo and fires Slack / email if any
- * findings meet the configured minimum severity.
- *
- * @param {string} repoId
- * @param {string} repoFullName
- * @param {Array}  issues      findings with .id set (post-saveFindings)
- * @param {string} triggerType
- * @param {string} branch
- * @param {string} [scanId]
- */
-async function notifyIfNeeded(repoId, repoFullName, issues, triggerType, branch, scanId) {
+export async function notifyIfNeeded(
+  repoId: string,
+  repoFullName: string,
+  issues: Finding[],
+  triggerType: string,
+  branch: string,
+  scanId?: string,
+): Promise<void> {
   if (!issues.length) return;
 
   const { data: config } = await supabase
@@ -212,30 +229,31 @@ async function notifyIfNeeded(repoId, repoFullName, issues, triggerType, branch,
 
   if (!config) return;
 
-  const threshold = SEVERITY_ORDER[config.min_severity] ?? 1; // default: high
-  const alertable = issues.filter((i) => (SEVERITY_ORDER[i.severity] ?? 99) <= threshold);
+  const alertConfig = config as AlertConfigRow;
+  const threshold = SEVERITY_ORDER[alertConfig.min_severity as Severity] ?? 1;
+  const alertable = issues.filter(
+    (i) => (SEVERITY_ORDER[i.severity as Severity] ?? 99) <= threshold,
+  );
   if (!alertable.length) return;
 
   const payload = { repoFullName, issues: alertable, triggerType, branch, scanId };
-  const promises = [];
+  const promises: Promise<void>[] = [];
 
-  if (config.slack_webhook) {
+  if (alertConfig.slack_webhook) {
     promises.push(
-      postToSlack(config.slack_webhook, payload).catch((err) =>
-        console.error("[notifier] Slack failed:", err.message)
-      )
+      postToSlack(alertConfig.slack_webhook, payload).catch((err: Error) =>
+        console.error("[notifier] Slack failed:", err.message),
+      ),
     );
   }
 
-  if (config.email) {
+  if (alertConfig.email) {
     promises.push(
-      sendAlertEmail(config.email, payload).catch((err) =>
-        console.error("[notifier] email failed:", err.message)
-      )
+      sendAlertEmail(alertConfig.email, payload).catch((err: Error) =>
+        console.error("[notifier] email failed:", err.message),
+      ),
     );
   }
 
   if (promises.length) await Promise.all(promises);
 }
-
-module.exports = { notifyIfNeeded };

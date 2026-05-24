@@ -1,4 +1,4 @@
-const { countBySeverity, sortBySeverity, hasMinSeverity } = require("../scorer");
+import { countBySeverity, sortBySeverity, hasMinSeverity } from "../scorer";
 
 const MIXED_ISSUES = [
   { severity: "critical" },
@@ -80,7 +80,9 @@ describe("hasMinSeverity", () => {
   });
 
   test("returns false when all issues are below the threshold", () => {
-    expect(hasMinSeverity([{ severity: "low" }, { severity: "medium" }], "high")).toBe(false);
+    expect(
+      hasMinSeverity([{ severity: "low" }, { severity: "medium" }], "high"),
+    ).toBe(false);
   });
 
   test("returns false for an empty array", () => {

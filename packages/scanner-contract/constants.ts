@@ -1,21 +1,20 @@
-/** @type {Record<string, number>} */
-const SEVERITY_ORDER = {
+import type {Severity, FindingCategory} from "./types";
+
+const SEVERITY_ORDER: Record<Severity, number> = {
   critical: 0,
   high: 1,
   medium: 2,
   low: 3,
 };
 
-/** @type {Record<string, string>} */
-const SEVERITY_EMOJI = {
+const SEVERITY_EMOJI: Record<Severity, string> = {
   critical: "🔴",
   high: "🟠",
   medium: "🟡",
   low: "🔵",
 };
 
-/** @type {Record<string, string>} */
-const CATEGORY_LABELS = {
+const CATEGORY_LABELS: Record<FindingCategory, string> = {
   hardcoded_secret: "Hardcoded Secret",
   missing_auth: "Missing Authentication",
   sql_injection: "SQL Injection",
@@ -55,21 +54,17 @@ const CATEGORY_LABELS = {
   other: "Other",
 };
 
-const FINDING_CATEGORIES = Object.keys(CATEGORY_LABELS);
+const FINDING_CATEGORIES = Object.keys(CATEGORY_LABELS) as FindingCategory[];
 
 const MAIN_BRANCHES = ["main", "master"];
 
 const MAX_DIFF_BYTES = 200_000;
 
-/** Hosted product URL (used in GitHub review comment links). */
-const GITSENTRY_URL = "https://gitsentry.dev";
-
-module.exports = {
+export {
   SEVERITY_ORDER,
   SEVERITY_EMOJI,
   CATEGORY_LABELS,
   FINDING_CATEGORIES,
   MAIN_BRANCHES,
   MAX_DIFF_BYTES,
-  GITSENTRY_URL,
 };

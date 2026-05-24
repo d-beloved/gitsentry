@@ -1,7 +1,10 @@
-const { supabase } = require("../db/client");
+import { supabase } from "../db/client";
 
-async function handleRepository(payload) {
-  const { action, repository: repo } = payload;
+export async function handleRepository(
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const action = payload.action as string;
+  const repo = payload.repository as Record<string, unknown>;
 
   if (action !== "privatized" && action !== "publicized") return;
 
@@ -16,5 +19,3 @@ async function handleRepository(payload) {
 
   console.log(`[repository] ${repo.full_name} marked is_private=${isPrivate} (${action})`);
 }
-
-module.exports = { handleRepository };

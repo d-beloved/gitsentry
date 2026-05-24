@@ -1,28 +1,48 @@
-const { supabase } = require("./client");
-const { countBySeverity } = require("../lib/scorer");
+import { supabase } from "./client";
+import { countBySeverity } from "../lib/scorer";
+import type { Finding } from "../../../../packages/scanner-contract/types";
+import type {
+  OrgRow,
+  RepoRow,
+  ScanRow,
+  PublicStatsRow,
+  OrgSummary,
+  OrgWithUsage,
+} from "./types";
 
 // ─── Repos ────────────────────────────────────────────────────────────────────
 
-/**
- * Upserts an org row and returns its id.
- */
-async function getOrCreateOrg({ githubId, login, avatarUrl }) {
+export async function getOrCreateOrg(params: {
+  githubId: number;
+  login: string;
+  avatarUrl: string | null;
+}): Promise<{ id: string }> {
   const { data, error } = await supabase
     .from("orgs")
-    .upsert({ github_id: githubId, login, avatar_url: avatarUrl }, { onConflict: "github_id" })
+    .upsert(
+      { github_id: params.githubId, login: params.login, avatar_url: params.avatarUrl },
+      { onConflict: "github_id" },
+    )
     .select("id")
     .single();
 
   if (error) throw new Error(`getOrCreateOrg: ${error.message}`);
-  return data;
+  return data as { id: string };
 }
 
-/**
- * Upserts a repo row and returns the full row.
- * Pass orgId to link the repo to its owner org.
- */
-async function getOrCreateRepo(repoFullName, repoGithubId, orgId = null, installationId = null, isPrivate = false, isActive = null) {
-  const upsertData = { github_id: repoGithubId, full_name: repoFullName, is_private: isPrivate };
+export async function getOrCreateRepo(
+  repoFullName: string,
+  repoGithubId: number,
+  orgId: string | null = null,
+  installationId: number | null = null,
+  isPrivate: boolean = false,
+  isActive: boolean | null = null,
+): Promise<RepoRow> {
+  const upsertData: Record<string, unknown> = {
+    github_id: repoGithubId,
+    full_name: repoFullName,
+    is_private: isPrivate,
+  };
   if (orgId) upsertData.org_id = orgId;
   if (installationId) upsertData.installation_id = installationId;
   if (isActive !== null) upsertData.is_active = isActive;
@@ -34,29 +54,26 @@ async function getOrCreateRepo(repoFullName, repoGithubId, orgId = null, install
     .single();
 
   if (error) throw new Error(`getOrCreateRepo: ${error.message}`);
-  return data;
+  return data as RepoRow;
 }
 
-/**
- * Looks up the org (with plan) linked to a GitHub App installation ID.
- * Used to check plan before processing webhooks for private repos.
- */
-async function getOrgByInstallationId(installationId) {
+export async function getOrgByInstallationId(
+  installationId: number,
+): Promise<OrgSummary | null> {
   const { data } = await supabase
     .from("installations")
     .select("org_id, orgs(id, plan)")
     .eq("github_install_id", installationId)
     .single();
-  return data?.orgs ?? null;
+  return ((data?.orgs as unknown) as OrgSummary) ?? null;
 }
 
 // ─── Scans ────────────────────────────────────────────────────────────────────
 
-/**
- * Returns true if a scan already exists for this repo+commit.
- * Used to deduplicate retried webhook deliveries.
- */
-async function scanExistsForCommit(repoFullName, commitSha) {
+export async function scanExistsForCommit(
+  repoFullName: string,
+  commitSha: string,
+): Promise<boolean> {
   const { data: repo } = await supabase
     .from("repos")
     .select("id")
@@ -68,32 +85,41 @@ async function scanExistsForCommit(repoFullName, commitSha) {
   const { data } = await supabase
     .from("scans")
     .select("id")
-    .eq("repo_id", repo.id)
+    .eq("repo_id", (repo as { id: string }).id)
     .eq("commit_sha", commitSha)
     .limit(1);
 
   return !!(data?.length);
 }
 
-/**
- * Inserts a new scan row and returns it.
- * repoOwner: { githubId, login, avatarUrl } — the GitHub account that owns the repo
- *   (individual user or org). Used to populate org_id on the repo row.
- */
-async function saveScan({
-  repoFullName,
-  repoGithubId,
-  repoOwner,
-  installationId = null,
-  isPrivate = false,
-  triggerType,
-  triggerRef,
-  commitSha,
-  author,
-  filesChanged = 0,
-  linesAdded = 0,
-}) {
-  let orgId = null;
+export async function saveScan(params: {
+  repoFullName: string;
+  repoGithubId: number;
+  repoOwner: { githubId: number; login: string; avatarUrl: string | null } | null;
+  installationId?: number | null;
+  isPrivate?: boolean;
+  triggerType: string;
+  triggerRef: string;
+  commitSha: string;
+  author: string | null;
+  filesChanged?: number;
+  linesAdded?: number;
+}): Promise<ScanRow> {
+  const {
+    repoFullName,
+    repoGithubId,
+    repoOwner,
+    installationId = null,
+    isPrivate = false,
+    triggerType,
+    triggerRef,
+    commitSha,
+    author,
+    filesChanged = 0,
+    linesAdded = 0,
+  } = params;
+
+  let orgId: string | null = null;
   if (repoOwner) {
     const org = await getOrCreateOrg({
       githubId: repoOwner.githubId,
@@ -103,7 +129,14 @@ async function saveScan({
     orgId = org.id;
   }
 
-  const repo = await getOrCreateRepo(repoFullName, repoGithubId, orgId, installationId, isPrivate, true);
+  const repo = await getOrCreateRepo(
+    repoFullName,
+    repoGithubId,
+    orgId,
+    installationId,
+    isPrivate,
+    true,
+  );
 
   const { data, error } = await supabase
     .from("scans")
@@ -121,13 +154,15 @@ async function saveScan({
     .single();
 
   if (error) throw new Error(`saveScan: ${error.message}`);
-  return data;
+  return data as ScanRow;
 }
 
-/**
- * Updates a scan row with final counts and status once analysis is complete.
- */
-async function updateScanStatus(scanId, issues, durationMs = 0, status = "complete") {
+export async function updateScanStatus(
+  scanId: string,
+  issues: Array<{ severity: string }>,
+  durationMs: number = 0,
+  status: "complete" | "failed" = "complete",
+): Promise<void> {
   const { critical, high, medium, low } = countBySeverity(issues);
 
   const { error } = await supabase
@@ -154,13 +189,9 @@ async function updateScanStatus(scanId, issues, durationMs = 0, status = "comple
 
 // ─── Findings ─────────────────────────────────────────────────────────────────
 
-/**
- * Bulk-inserts all findings for a scan.
- */
-async function saveFindings(scanId, issues) {
+export async function saveFindings(scanId: string, issues: Finding[]): Promise<Finding[]> {
   if (!issues.length) return [];
 
-  // Look up repo_id from the scan row
   const { data: scan, error: scanErr } = await supabase
     .from("scans")
     .select("repo_id")
@@ -171,7 +202,7 @@ async function saveFindings(scanId, issues) {
 
   const rows = issues.map((issue) => ({
     scan_id: scanId,
-    repo_id: scan.repo_id,
+    repo_id: (scan as { repo_id: string }).repo_id,
     severity: issue.severity,
     category: issue.category,
     file_path: issue.file_path,
@@ -190,15 +221,19 @@ async function saveFindings(scanId, issues) {
   const { data, error } = await supabase.from("findings").insert(rows).select("id");
   if (error) throw new Error(`saveFindings: ${error.message}`);
 
+  const inserted = data as Array<{ id: string }>;
   return issues.map((issue, index) => ({
     ...issue,
-    id: data?.[index]?.id,
+    id: inserted?.[index]?.id,
   }));
 }
 
 // ─── Public stats ─────────────────────────────────────────────────────────────
 
-async function updatePublicStats({ findings, critical }) {
+async function updatePublicStats(params: {
+  findings: number;
+  critical: number;
+}): Promise<void> {
   const existing = await getPublicStats();
   if (!existing) return;
 
@@ -206,8 +241,8 @@ async function updatePublicStats({ findings, critical }) {
     .from("public_stats")
     .update({
       total_scans: Number(existing.total_scans ?? 0) + 1,
-      total_findings: Number(existing.total_findings ?? 0) + findings,
-      critical_caught: Number(existing.critical_caught ?? 0) + critical,
+      total_findings: Number(existing.total_findings ?? 0) + params.findings,
+      critical_caught: Number(existing.critical_caught ?? 0) + params.critical,
       updated_at: new Date().toISOString(),
     })
     .eq("id", existing.id);
@@ -215,10 +250,7 @@ async function updatePublicStats({ findings, critical }) {
   if (error) throw new Error(`updatePublicStats: ${error.message}`);
 }
 
-/**
- * Returns the latest cached public stats row.
- */
-async function getPublicStats() {
+export async function getPublicStats(): Promise<PublicStatsRow | null> {
   const { data, error } = await supabase
     .from("public_stats")
     .select("*")
@@ -231,15 +263,12 @@ async function getPublicStats() {
     throw new Error(`getPublicStats: ${error.message}`);
   }
 
-  return data;
+  return data as PublicStatsRow;
 }
 
 // ─── Security sweep ───────────────────────────────────────────────────────────
 
-/**
- * Inserts a scan row for a security sweep (repo already exists — no org/repo upsert needed).
- */
-async function saveSweepScan(repoId, branch) {
+export async function saveSweepScan(repoId: string, branch: string): Promise<ScanRow> {
   const { data, error } = await supabase
     .from("scans")
     .insert({
@@ -256,13 +285,10 @@ async function saveSweepScan(repoId, branch) {
     .single();
 
   if (error) throw new Error(`saveSweepScan: ${error.message}`);
-  return data;
+  return data as ScanRow;
 }
 
-/**
- * Increments the sweep trial counter on an org (used to gate free-tier sweeps).
- */
-async function incrementSweepTrials(orgId) {
+export async function incrementSweepTrials(orgId: string): Promise<void> {
   const { data: org } = await supabase
     .from("orgs")
     .select("sweep_trials_used")
@@ -271,16 +297,13 @@ async function incrementSweepTrials(orgId) {
 
   await supabase
     .from("orgs")
-    .update({ sweep_trials_used: (org?.sweep_trials_used ?? 0) + 1 })
+    .update({ sweep_trials_used: ((org as OrgRow | null)?.sweep_trials_used ?? 0) + 1 })
     .eq("id", orgId);
 }
 
 // ─── Billing helpers ──────────────────────────────────────────────────────────
 
-/**
- * Returns the org row for a given repo, including plan + usage fields.
- */
-async function getOrgByRepoId(repoId) {
+export async function getOrgByRepoId(repoId: string): Promise<OrgWithUsage | null> {
   const { data, error } = await supabase
     .from("repos")
     .select("org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used)")
@@ -288,13 +311,10 @@ async function getOrgByRepoId(repoId) {
     .single();
 
   if (error || !data) return null;
-  return data.orgs ?? null;
+  return ((data as unknown) as { orgs: OrgWithUsage | null }).orgs ?? null;
 }
 
-/**
- * Increments scan_count_month for an org, resetting to 1 when the calendar month changes.
- */
-async function incrementScanCount(orgId) {
+export async function incrementScanCount(orgId: string): Promise<void> {
   const currentMonth = new Date().toISOString().slice(0, 7);
 
   const { data: org } = await supabase
@@ -303,52 +323,46 @@ async function incrementScanCount(orgId) {
     .eq("id", orgId)
     .single();
 
-  const needsReset = !org || org.scan_month !== currentMonth;
+  const row = org as Pick<OrgRow, "scan_count_month" | "scan_month"> | null;
+  const needsReset = !row || row.scan_month !== currentMonth;
 
-  await supabase.from("orgs").update({
-    scan_count_month: needsReset ? 1 : (org.scan_count_month || 0) + 1,
-    scan_month: currentMonth,
-  }).eq("id", orgId);
+  await supabase
+    .from("orgs")
+    .update({
+      scan_count_month: needsReset ? 1 : (row?.scan_count_month ?? 0) + 1,
+      scan_month: currentMonth,
+    })
+    .eq("id", orgId);
 }
 
-/**
- * Updates org plan + Paddle subscription fields.
- */
-async function updateOrgPlan(orgId, { plan, paddleCustomerId, paddleSubscriptionId, subscriptionStatus }) {
-  const update = {};
-  if (plan !== undefined)                   update.plan = plan;
-  if (paddleCustomerId !== undefined)       update.paddle_customer_id = paddleCustomerId;
-  if (paddleSubscriptionId !== undefined)   update.paddle_subscription_id = paddleSubscriptionId;
-  if (subscriptionStatus !== undefined)     update.subscription_status = subscriptionStatus;
+export async function updateOrgPlan(
+  orgId: string,
+  params: {
+    plan?: string;
+    paddleCustomerId?: string;
+    paddleSubscriptionId?: string;
+    subscriptionStatus?: string;
+  },
+): Promise<void> {
+  const update: Record<string, string> = {};
+  if (params.plan !== undefined) update.plan = params.plan;
+  if (params.paddleCustomerId !== undefined) update.paddle_customer_id = params.paddleCustomerId;
+  if (params.paddleSubscriptionId !== undefined)
+    update.paddle_subscription_id = params.paddleSubscriptionId;
+  if (params.subscriptionStatus !== undefined)
+    update.subscription_status = params.subscriptionStatus;
 
   const { error } = await supabase.from("orgs").update(update).eq("id", orgId);
   if (error) throw new Error(`updateOrgPlan: ${error.message}`);
 }
 
-/**
- * Looks up an org by Paddle customer ID.
- */
-async function getOrgByPaddleCustomer(paddleCustomerId) {
+export async function getOrgByPaddleCustomer(
+  paddleCustomerId: string,
+): Promise<OrgRow | null> {
   const { data } = await supabase
     .from("orgs")
     .select("*")
     .eq("paddle_customer_id", paddleCustomerId)
     .single();
-  return data ?? null;
+  return (data as OrgRow | null) ?? null;
 }
-
-module.exports = {
-  scanExistsForCommit,
-  saveScan,
-  saveFindings,
-  updateScanStatus,
-  getOrCreateRepo,
-  getPublicStats,
-  saveSweepScan,
-  incrementSweepTrials,
-  getOrgByRepoId,
-  getOrgByInstallationId,
-  incrementScanCount,
-  updateOrgPlan,
-  getOrgByPaddleCustomer,
-};

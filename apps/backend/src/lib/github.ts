@@ -1,14 +1,14 @@
-const {App} = require("@octokit/app");
-const {sortBySeverity, countBySeverity} = require("./scorer");
-const {
+import { App } from "@octokit/app";
+import { sortBySeverity, countBySeverity } from "./scorer";
+import {
   SEVERITY_EMOJI,
   CATEGORY_LABELS,
-  GITSENTRY_URL,
-} = require("../../../../packages/scanner-contract/constants");
+} from "../../../../packages/scanner-contract/constants";
+import type { Finding } from "../../../../packages/scanner-contract/types";
 
-// Lazy-initialise so tests can run without env vars
-let _app;
-function getApp() {
+let _app: App | undefined;
+
+function getApp(): App {
   if (!_app) {
     const appId = process.env.GITHUB_APP_ID;
     const encodedKey = process.env.GITHUB_APP_PRIVATE_KEY;
@@ -20,25 +20,22 @@ function getApp() {
     }
 
     const privateKey = Buffer.from(encodedKey, "base64").toString("utf8");
-
-    _app = new App({
-      appId,
-      privateKey,
-    });
+    _app = new App({ appId, privateKey });
   }
   return _app;
 }
 
-async function getOctokit(installationId) {
+async function getOctokit(installationId: number) {
   return getApp().getInstallationOctokit(installationId);
 }
 
 // ─── GitHub API calls ─────────────────────────────────────────────────────────
 
-/**
- * Fetch the diff for a pull request.
- */
-async function getDiff(repoFullName, prNumber, installationId) {
+export async function getDiff(
+  repoFullName: string,
+  prNumber: number,
+  installationId: number,
+): Promise<string> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -48,17 +45,18 @@ async function getDiff(repoFullName, prNumber, installationId) {
       owner,
       repo,
       pull_number: prNumber,
-      headers: {accept: "application/vnd.github.v3.diff"},
+      headers: { accept: "application/vnd.github.v3.diff" },
     },
   );
 
-  return response.data;
+  return response.data as unknown as string;
 }
 
-/**
- * Fetch the diff for a single commit.
- */
-async function getPushDiff(repoFullName, commitSha, installationId) {
+export async function getPushDiff(
+  repoFullName: string,
+  commitSha: string,
+  installationId: number,
+): Promise<string> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -68,24 +66,21 @@ async function getPushDiff(repoFullName, commitSha, installationId) {
       owner,
       repo,
       ref: commitSha,
-      headers: {accept: "application/vnd.github.v3.diff"},
+      headers: { accept: "application/vnd.github.v3.diff" },
     },
   );
 
-  return response.data;
+  return response.data as unknown as string;
 }
 
-/**
- * Post a PR review comment with all findings.
- */
-async function postPRReview(
-  repoFullName,
-  prNumber,
-  issues,
-  summary,
-  scanId,
-  installationId,
-) {
+export async function postPRReview(
+  repoFullName: string,
+  prNumber: number,
+  issues: Finding[],
+  summary: string,
+  scanId: string,
+  installationId: number,
+): Promise<void> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -102,17 +97,14 @@ async function postPRReview(
   );
 }
 
-/**
- * Post a comment on a commit with all findings.
- */
-async function postCommitComment(
-  repoFullName,
-  commitSha,
-  issues,
-  summary,
-  scanId,
-  installationId,
-) {
+export async function postCommitComment(
+  repoFullName: string,
+  commitSha: string,
+  issues: Finding[],
+  summary: string,
+  scanId: string,
+  installationId: number,
+): Promise<void> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -132,21 +124,21 @@ async function postCommitComment(
 // ─── Comment formatter ────────────────────────────────────────────────────────
 
 const PRODUCT_NAME = "Gitsentry.dev";
-const PRODUCT_URL = GITSENTRY_URL;
+const PRODUCT_URL = process.env.PRODUCT_URL;
 
-function findingReportUrl(findingId) {
+function findingReportUrl(findingId: string): string {
   return `${PRODUCT_URL}/dashboard/findings/${findingId}`;
 }
 
-function findingDismissUrl(findingId) {
+function findingDismissUrl(findingId: string): string {
   return `${PRODUCT_URL}/api/findings/${findingId}/dismiss`;
 }
 
-function formatReviewBody(issues, summary, scanId) {
+function formatReviewBody(issues: Finding[], summary: string, scanId: string): string {
   const sorted = sortBySeverity(issues);
   const counts = countBySeverity(issues);
 
-  const countParts = ["critical", "high", "medium", "low"]
+  const countParts = (["critical", "high", "medium", "low"] as const)
     .filter((s) => counts[s] > 0)
     .map((s) => `${counts[s]} ${s}`);
 
@@ -188,14 +180,15 @@ function formatReviewBody(issues, summary, scanId) {
   return body;
 }
 
-/**
- * Fetch a diff spanning the last 5 commits on a branch — used for security sweeps.
- */
-async function getSweepDiff(repoFullName, branch, installationId) {
+export async function getSweepDiff(
+  repoFullName: string,
+  branch: string,
+  installationId: number,
+): Promise<string> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const {data: commits} = await octokit.request(
+  const { data: commits } = await octokit.request(
     "GET /repos/{owner}/{repo}/commits",
     {
       owner,
@@ -207,7 +200,6 @@ async function getSweepDiff(repoFullName, branch, installationId) {
 
   if (!commits.length) return "";
 
-  // With only one commit there is no range to compare; just return that commit's diff
   if (commits.length === 1) {
     return getPushDiff(repoFullName, commits[0].sha, installationId);
   }
@@ -221,11 +213,11 @@ async function getSweepDiff(repoFullName, branch, installationId) {
       owner,
       repo,
       basehead: `${base}...${head}`,
-      headers: {accept: "application/vnd.github.v3.diff"},
+      headers: { accept: "application/vnd.github.v3.diff" },
     },
   );
 
-  return response.data;
+  return response.data as unknown as string;
 }
 
 /**
@@ -233,11 +225,13 @@ async function getSweepDiff(repoFullName, branch, installationId) {
  *
  * Free plan: conclusion is always "neutral" — findings are visible but PRs are never blocked.
  * Pro plan: conclusion is "failure" when critical or high findings exist, enabling branch protection.
- *
- * Users configure blocking by adding "Gitsentry Security Scan" as a required status check
- * in their repo's branch protection settings (Settings → Branches → Require status checks).
  */
-async function postCheckRun(repoFullName, headSha, findings, installationId) {
+export async function postCheckRun(
+  repoFullName: string,
+  headSha: string,
+  findings: Finding[],
+  installationId: number,
+): Promise<void> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -246,7 +240,9 @@ async function postCheckRun(repoFullName, headSha, findings, installationId) {
   const highCount = findings.filter((f) => f.severity === "high").length;
   const blocking = criticalCount > 0 || highCount > 0;
 
-  let conclusion, title, summary;
+  let conclusion: string;
+  let title: string;
+  let summary: string;
 
   if (total === 0) {
     conclusion = "success";
@@ -254,13 +250,15 @@ async function postCheckRun(repoFullName, headSha, findings, installationId) {
     summary = "Gitsentry.dev scanned this PR and found no security issues.";
   } else if (blocking) {
     conclusion = "failure";
-    const parts = [];
+    const parts: string[] = [];
     if (criticalCount > 0) parts.push(`${criticalCount} critical`);
     if (highCount > 0) parts.push(`${highCount} high`);
     title = `${total} security issue${total !== 1 ? "s" : ""} found (${parts.join(", ")})`;
     summary =
       "Gitsentry.dev found blocking security issues. Resolve critical and high severity findings before merging.\n\n" +
-      "To dismiss a false positive, visit your [Gitsentry dashboard](" + PRODUCT_URL + "/dashboard).";
+      "To dismiss a false positive, visit your [Gitsentry dashboard](" +
+      PRODUCT_URL +
+      "/dashboard).";
   } else {
     conclusion = "neutral";
     title = `${total} low-severity finding${total !== 1 ? "s" : ""} — informational`;
@@ -278,15 +276,11 @@ async function postCheckRun(repoFullName, headSha, findings, installationId) {
   });
 }
 
-/**
- * Post an upgrade-prompt comment when the free-tier scan limit is reached.
- * Handles both PR comments (prNumber set) and commit comments (commitSha set).
- */
-async function postUpgradeComment(
-  repoFullName,
-  {prNumber, commitSha},
-  installationId,
-) {
+export async function postUpgradeComment(
+  repoFullName: string,
+  target: { prNumber?: number | null; commitSha?: string | null },
+  installationId: number,
+): Promise<void> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -300,35 +294,25 @@ async function postUpgradeComment(
     `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})_`,
   ].join("\n");
 
-  if (prNumber != null) {
+  if (target.prNumber != null) {
     await octokit.request(
       "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
       {
         owner,
         repo,
-        issue_number: prNumber,
+        issue_number: target.prNumber,
         body,
       },
     );
-  } else if (commitSha) {
+  } else if (target.commitSha) {
     await octokit.request(
       "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments",
       {
         owner,
         repo,
-        commit_sha: commitSha,
+        commit_sha: target.commitSha,
         body,
       },
     );
   }
 }
-
-module.exports = {
-  getDiff,
-  getPushDiff,
-  getSweepDiff,
-  postPRReview,
-  postCommitComment,
-  postCheckRun,
-  postUpgradeComment,
-};
