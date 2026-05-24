@@ -6,7 +6,7 @@
   "license": "MIT",
   "main": "apps/backend/src/index.ts",
   "scripts": {
-    "dev": "nodemon --exec tsx apps/backend/src/index.ts",
+    "dev": "nodemon --exec 'node --env-file=apps/backend/.env --import tsx apps/backend/src/index.ts'",
     "start": "node apps/backend/dist/apps/backend/src/index.js",
     "build": "tsc --project apps/backend/tsconfig.json",
     "test": "jest",
@@ -18,7 +18,6 @@
     "@supabase/supabase-js": "^2.47.0",
     "bull": "^4.16.0",
     "cors": "^2.8.6",
-    "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "express-rate-limit": "^8.5.1",
     "parse-diff": "^0.11.1"

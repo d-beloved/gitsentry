@@ -1,7 +1,3 @@
-import path from "path";
-import dotenv from "dotenv";
-dotenv.config({path: path.join(__dirname, "../.env")});
-
 import express, {Request, Response} from "express";
 import cors from "cors";
 import rateLimit from "express-rate-limit";
