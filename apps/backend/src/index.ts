@@ -7,6 +7,11 @@ import rescanRouter from "./api/rescan";
 
 const app = express();
 
+// Render (and most cloud platforms) sit behind a reverse proxy that sets
+// X-Forwarded-For. Without this, express-rate-limit throws a ValidationError
+// and leaves requests hanging instead of responding.
+app.set("trust proxy", 1);
+
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",")
   : ["http://localhost:3001"];
