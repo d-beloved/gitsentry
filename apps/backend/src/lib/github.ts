@@ -80,21 +80,26 @@ export async function postPRReview(
   summary: string,
   scanId: string,
   installationId: number,
-): Promise<void> {
+  existingCommentId?: number | null,
+): Promise<number> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const body = formatReviewBody(issues, summary, scanId);
+  const body = formatReviewBody(issues, summary, scanId, !!existingCommentId);
 
-  await octokit.request(
+  if (existingCommentId) {
+    const { data } = await octokit.request(
+      "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
+      { owner, repo, comment_id: existingCommentId, body },
+    );
+    return data.id;
+  }
+
+  const { data } = await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
-    {
-      owner,
-      repo,
-      issue_number: prNumber,
-      body,
-    },
+    { owner, repo, issue_number: prNumber, body },
   );
+  return data.id;
 }
 
 export async function postCommitComment(
@@ -131,10 +136,10 @@ function findingReportUrl(findingId: string): string {
 }
 
 function findingDismissUrl(findingId: string): string {
-  return `${PRODUCT_URL}/api/findings/${findingId}/dismiss`;
+  return `${PRODUCT_URL}/dashboard/findings/${findingId}`;
 }
 
-function formatReviewBody(issues: Finding[], summary: string, scanId: string): string {
+function formatReviewBody(issues: Finding[], summary: string, scanId: string, isUpdate = false): string {
   const sorted = sortBySeverity(issues);
   const counts = countBySeverity(issues);
 
@@ -165,16 +170,17 @@ function formatReviewBody(issues: Finding[], summary: string, scanId: string): s
     body += `**Fix:** ${issue.fix_suggestion}\n\n`;
 
     if (issue.id) {
-      body += `[View full report](${findingReportUrl(issue.id)}) · `;
-      body += `[False positive?](${findingDismissUrl(issue.id)})\n\n`;
+      body += `[View & manage finding](${findingReportUrl(issue.id)})\n\n`;
     }
 
     body += `---\n\n`;
   }
 
   body += `> ${summary}\n\n`;
+  body += `💬 Comment \`/gitsentry rescan\` on this PR to re-run the scan at any time.\n\n`;
   body += `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})`;
-  if (scanId) body += ` · scan ${scanId}`;
+  if (scanId) body += ` · scan \`${scanId.slice(0, 8)}\``;
+  if (isUpdate) body += ` · updated ${new Date().toUTCString()}`;
   body += `_`;
 
   return body;

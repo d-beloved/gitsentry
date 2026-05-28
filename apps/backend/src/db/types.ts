@@ -41,6 +41,7 @@ export interface ScanRow {
   medium_count?: number;
   low_count?: number;
   duration_ms?: number;
+  gh_comment_id?: number | null;
   created_at?: string;
 }
 
@@ -71,4 +72,5 @@ export interface OrgWithUsage extends OrgSummary {
   scan_count_month: number | null;
   scan_month: string | null;
   sweep_trials_used: number;
+  subscription_status: string | null;
 }

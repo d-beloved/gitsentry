@@ -3,6 +3,7 @@ import cors from "cors";
 import rateLimit from "express-rate-limit";
 import webhookRouter from "./webhooks/router";
 import sweepRouter from "./api/sweep";
+import rescanRouter from "./api/rescan";
 
 const app = express();
 
@@ -14,7 +15,15 @@ app.use(cors({origin: ALLOWED_ORIGINS, credentials: true}));
 
 const webhookLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 120,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: "Too many requests"},
+});
+
+const sweepLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
   standardHeaders: true,
   legacyHeaders: false,
   message: {error: "Too many requests"},
@@ -33,7 +42,8 @@ app.get("/health", (_req: Request, res: Response) =>
 );
 
 app.use("/webhook", webhookLimiter, webhookRouter);
-app.use("/api/sweep", sweepRouter);
+app.use("/api/sweep", sweepLimiter, sweepRouter);
+app.use("/api/rescan", sweepLimiter, rescanRouter);
 
 app.use((_req: Request, res: Response) =>
   res.status(404).json({error: "Not found"}),

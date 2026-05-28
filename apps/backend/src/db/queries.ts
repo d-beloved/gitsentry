@@ -1,6 +1,6 @@
-import { supabase } from "./client";
-import { countBySeverity } from "../lib/scorer";
-import type { Finding } from "../../../../packages/scanner-contract/types";
+import {supabase} from "./client";
+import {countBySeverity} from "../lib/scorer";
+import type {Finding} from "../../../../packages/scanner-contract/types";
 import type {
   OrgRow,
   RepoRow,
@@ -16,18 +16,22 @@ export async function getOrCreateOrg(params: {
   githubId: number;
   login: string;
   avatarUrl: string | null;
-}): Promise<{ id: string }> {
-  const { data, error } = await supabase
+}): Promise<{id: string}> {
+  const {data, error} = await supabase
     .from("orgs")
     .upsert(
-      { github_id: params.githubId, login: params.login, avatar_url: params.avatarUrl },
-      { onConflict: "github_id" },
+      {
+        github_id: params.githubId,
+        login: params.login,
+        avatar_url: params.avatarUrl,
+      },
+      {onConflict: "github_id"},
     )
     .select("id")
     .single();
 
   if (error) throw new Error(`getOrCreateOrg: ${error.message}`);
-  return data as { id: string };
+  return data as {id: string};
 }
 
 export async function getOrCreateRepo(
@@ -47,9 +51,9 @@ export async function getOrCreateRepo(
   if (installationId) upsertData.installation_id = installationId;
   if (isActive !== null) upsertData.is_active = isActive;
 
-  const { data, error } = await supabase
+  const {data, error} = await supabase
     .from("repos")
-    .upsert(upsertData, { onConflict: "github_id" })
+    .upsert(upsertData, {onConflict: "github_id"})
     .select()
     .single();
 
@@ -60,12 +64,12 @@ export async function getOrCreateRepo(
 export async function getOrgByInstallationId(
   installationId: number,
 ): Promise<OrgSummary | null> {
-  const { data } = await supabase
+  const {data} = await supabase
     .from("installations")
     .select("org_id, orgs(id, plan)")
     .eq("github_install_id", installationId)
     .single();
-  return ((data?.orgs as unknown) as OrgSummary) ?? null;
+  return (data?.orgs as unknown as OrgSummary) ?? null;
 }
 
 // ─── Scans ────────────────────────────────────────────────────────────────────
@@ -74,7 +78,7 @@ export async function scanExistsForCommit(
   repoFullName: string,
   commitSha: string,
 ): Promise<boolean> {
-  const { data: repo } = await supabase
+  const {data: repo} = await supabase
     .from("repos")
     .select("id")
     .eq("full_name", repoFullName)
@@ -82,20 +86,20 @@ export async function scanExistsForCommit(
 
   if (!repo) return false;
 
-  const { data } = await supabase
+  const {data} = await supabase
     .from("scans")
     .select("id")
-    .eq("repo_id", (repo as { id: string }).id)
+    .eq("repo_id", (repo as {id: string}).id)
     .eq("commit_sha", commitSha)
     .limit(1);
 
-  return !!(data?.length);
+  return !!data?.length;
 }
 
 export async function saveScan(params: {
   repoFullName: string;
   repoGithubId: number;
-  repoOwner: { githubId: number; login: string; avatarUrl: string | null } | null;
+  repoOwner: {githubId: number; login: string; avatarUrl: string | null} | null;
   installationId?: number | null;
   isPrivate?: boolean;
   triggerType: string;
@@ -138,7 +142,7 @@ export async function saveScan(params: {
     true,
   );
 
-  const { data, error } = await supabase
+  const {data, error} = await supabase
     .from("scans")
     .insert({
       repo_id: repo.id,
@@ -159,13 +163,13 @@ export async function saveScan(params: {
 
 export async function updateScanStatus(
   scanId: string,
-  issues: Array<{ severity: string }>,
+  issues: Array<{severity: string}>,
   durationMs: number = 0,
   status: "complete" | "failed" = "complete",
 ): Promise<void> {
-  const { critical, high, medium, low } = countBySeverity(issues);
+  const {critical, high, medium, low} = countBySeverity(issues);
 
-  const { error } = await supabase
+  const {error} = await supabase
     .from("scans")
     .update({
       status,
@@ -181,7 +185,7 @@ export async function updateScanStatus(
   if (error) throw new Error(`updateScanStatus: ${error.message}`);
 
   if (status === "complete") {
-    updatePublicStats({ findings: issues.length, critical }).catch((err) => {
+    updatePublicStats({findings: issues.length, critical}).catch((err) => {
       console.error("[stats] update failed:", err);
     });
   }
@@ -189,20 +193,24 @@ export async function updateScanStatus(
 
 // ─── Findings ─────────────────────────────────────────────────────────────────
 
-export async function saveFindings(scanId: string, issues: Finding[]): Promise<Finding[]> {
+export async function saveFindings(
+  scanId: string,
+  issues: Finding[],
+): Promise<Finding[]> {
   if (!issues.length) return [];
 
-  const { data: scan, error: scanErr } = await supabase
+  const {data: scan, error: scanErr} = await supabase
     .from("scans")
     .select("repo_id")
     .eq("id", scanId)
     .single();
 
-  if (scanErr) throw new Error(`saveFindings: could not fetch scan: ${scanErr.message}`);
+  if (scanErr)
+    throw new Error(`saveFindings: could not fetch scan: ${scanErr.message}`);
 
   const rows = issues.map((issue) => ({
     scan_id: scanId,
-    repo_id: (scan as { repo_id: string }).repo_id,
+    repo_id: (scan as {repo_id: string}).repo_id,
     severity: issue.severity,
     category: issue.category,
     file_path: issue.file_path,
@@ -218,14 +226,46 @@ export async function saveFindings(scanId: string, issues: Finding[]): Promise<F
     attacker_profile: issue.attacker_profile ?? null,
   }));
 
-  const { data, error } = await supabase.from("findings").insert(rows).select("id");
+  const {data, error} = await supabase
+    .from("findings")
+    .insert(rows)
+    .select("id");
   if (error) throw new Error(`saveFindings: ${error.message}`);
 
-  const inserted = data as Array<{ id: string }>;
+  const inserted = data as Array<{id: string}>;
   return issues.map((issue, index) => ({
     ...issue,
     id: inserted?.[index]?.id,
   }));
+}
+
+/** Returns the GitHub comment ID from the most recent PR scan comment, if any. */
+export async function getPreviousPRCommentId(
+  repoId: string,
+  prNumber: number,
+): Promise<number | null> {
+  const {data} = await supabase
+    .from("scans")
+    .select("gh_comment_id")
+    .eq("repo_id", repoId)
+    .eq("trigger_type", "pull_request")
+    .eq("trigger_ref", String(prNumber))
+    .not("gh_comment_id", "is", null)
+    .order("created_at", {ascending: false})
+    .limit(1)
+    .single();
+  return (data as {gh_comment_id: number | null} | null)?.gh_comment_id ?? null;
+}
+
+/** Persists the GitHub comment ID returned after posting/updating a PR comment. */
+export async function updateScanCommentId(
+  scanId: string,
+  commentId: number,
+): Promise<void> {
+  await supabase
+    .from("scans")
+    .update({gh_comment_id: commentId})
+    .eq("id", scanId);
 }
 
 // ─── Public stats ─────────────────────────────────────────────────────────────
@@ -237,7 +277,7 @@ async function updatePublicStats(params: {
   const existing = await getPublicStats();
   if (!existing) return;
 
-  const { error } = await supabase
+  const {error} = await supabase
     .from("public_stats")
     .update({
       total_scans: Number(existing.total_scans ?? 0) + 1,
@@ -251,10 +291,10 @@ async function updatePublicStats(params: {
 }
 
 export async function getPublicStats(): Promise<PublicStatsRow | null> {
-  const { data, error } = await supabase
+  const {data, error} = await supabase
     .from("public_stats")
     .select("*")
-    .order("updated_at", { ascending: false })
+    .order("updated_at", {ascending: false})
     .limit(1)
     .single();
 
@@ -268,14 +308,17 @@ export async function getPublicStats(): Promise<PublicStatsRow | null> {
 
 // ─── Security sweep ───────────────────────────────────────────────────────────
 
-export async function saveSweepScan(repoId: string, branch: string): Promise<ScanRow> {
-  const { data, error } = await supabase
+export async function saveSweepScan(
+  repoId: string,
+  branch: string,
+): Promise<ScanRow> {
+  const {data, error} = await supabase
     .from("scans")
     .insert({
       repo_id: repoId,
       trigger_type: "security_sweep",
       trigger_ref: branch,
-      commit_sha: `sweep-${new Date().toISOString().slice(0, 10)}`,
+      commit_sha: `sweep-${Date.now()}`,
       author: null,
       files_changed: 0,
       lines_added: 0,
@@ -289,7 +332,7 @@ export async function saveSweepScan(repoId: string, branch: string): Promise<Sca
 }
 
 export async function incrementSweepTrials(orgId: string): Promise<void> {
-  const { data: org } = await supabase
+  const {data: org} = await supabase
     .from("orgs")
     .select("sweep_trials_used")
     .eq("id", orgId)
@@ -297,27 +340,33 @@ export async function incrementSweepTrials(orgId: string): Promise<void> {
 
   await supabase
     .from("orgs")
-    .update({ sweep_trials_used: ((org as OrgRow | null)?.sweep_trials_used ?? 0) + 1 })
+    .update({
+      sweep_trials_used: ((org as OrgRow | null)?.sweep_trials_used ?? 0) + 1,
+    })
     .eq("id", orgId);
 }
 
 // ─── Billing helpers ──────────────────────────────────────────────────────────
 
-export async function getOrgByRepoId(repoId: string): Promise<OrgWithUsage | null> {
-  const { data, error } = await supabase
+export async function getOrgByRepoId(
+  repoId: string,
+): Promise<OrgWithUsage | null> {
+  const {data, error} = await supabase
     .from("repos")
-    .select("org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used)")
+    .select(
+      "org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used, subscription_status)",
+    )
     .eq("id", repoId)
     .single();
 
   if (error || !data) return null;
-  return ((data as unknown) as { orgs: OrgWithUsage | null }).orgs ?? null;
+  return (data as unknown as {orgs: OrgWithUsage | null}).orgs ?? null;
 }
 
 export async function incrementScanCount(orgId: string): Promise<void> {
   const currentMonth = new Date().toISOString().slice(0, 7);
 
-  const { data: org } = await supabase
+  const {data: org} = await supabase
     .from("orgs")
     .select("scan_count_month, scan_month")
     .eq("id", orgId)
@@ -346,23 +395,74 @@ export async function updateOrgPlan(
 ): Promise<void> {
   const update: Record<string, string> = {};
   if (params.plan !== undefined) update.plan = params.plan;
-  if (params.paddleCustomerId !== undefined) update.paddle_customer_id = params.paddleCustomerId;
+  if (params.paddleCustomerId !== undefined)
+    update.paddle_customer_id = params.paddleCustomerId;
   if (params.paddleSubscriptionId !== undefined)
     update.paddle_subscription_id = params.paddleSubscriptionId;
   if (params.subscriptionStatus !== undefined)
     update.subscription_status = params.subscriptionStatus;
 
-  const { error } = await supabase.from("orgs").update(update).eq("id", orgId);
+  const {error} = await supabase.from("orgs").update(update).eq("id", orgId);
   if (error) throw new Error(`updateOrgPlan: ${error.message}`);
 }
 
 export async function getOrgByPaddleCustomer(
   paddleCustomerId: string,
 ): Promise<OrgRow | null> {
-  const { data } = await supabase
+  const {data} = await supabase
     .from("orgs")
     .select("*")
     .eq("paddle_customer_id", paddleCustomerId)
     .single();
   return (data as OrgRow | null) ?? null;
+}
+
+export async function getRepoRow(
+  repoId: string,
+): Promise<{github_id: number; full_name: string; org_id: string | null; is_private: boolean} | null> {
+  const {data} = await supabase
+    .from("repos")
+    .select("github_id, full_name, org_id, is_private")
+    .eq("id", repoId)
+    .single();
+  return data as {github_id: number; full_name: string; org_id: string | null; is_private: boolean} | null;
+}
+
+// Confirms that the given repo is actually owned by the given GitHub App
+// installation. Used by the sweep endpoint to prevent IDOR where a caller
+// mixes a repoId from org A with an installationId from org B.
+export async function verifyRepoInstallation(
+  repoId: string,
+  installationId: number,
+): Promise<boolean> {
+  const {data} = await supabase
+    .from("repos")
+    .select("id")
+    .eq("id", repoId)
+    .eq("installation_id", installationId)
+    .single();
+  return !!data;
+}
+
+// Atomically checks the monthly scan limit and increments the counter in one
+// operation, eliminating the TOCTOU race in the old SELECT-then-UPDATE pattern.
+
+// Returns true if a scan slot was claimed, false if the limit was already reached.
+export async function tryClaimScan(
+  orgId: string,
+  scanLimit: number,
+): Promise<boolean> {
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const {data, error} = await supabase.rpc("try_claim_scan", {
+    p_org_id: orgId,
+    p_month: currentMonth,
+    p_limit: scanLimit,
+  });
+  if (error) {
+    console.error("[db] tryClaimScan rpc error:", error.message);
+    // Fall back to permitting the scan rather than silently blocking all scans
+    // if the function hasn't been created yet.
+    return true;
+  }
+  return !!data;
 }

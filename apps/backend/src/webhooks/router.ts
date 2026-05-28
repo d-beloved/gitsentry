@@ -6,14 +6,23 @@ import { handleInstallation } from "./installation";
 import { handleInstallationRepositories } from "./installationRepositories";
 import { handleRepository } from "./repository";
 import { handleGithubAppAuthorization } from "./githubAppAuthorization";
+import { handleIssueComment } from "./issueComment";
 
 const router = express.Router();
 
 function verifySignature(req: Request): boolean {
+  const secret = process.env.GITHUB_WEBHOOK_SECRET;
+  // Reject immediately if secret is unset — avoids HMAC being computed over
+  // the string "undefined", which an attacker could trivially replicate.
+  if (!secret) {
+    console.error("[webhook] GITHUB_WEBHOOK_SECRET is not configured — rejecting request");
+    return false;
+  }
+
   const sig = req.headers["x-hub-signature-256"];
   if (!sig) return false;
 
-  const hmac = crypto.createHmac("sha256", process.env.GITHUB_WEBHOOK_SECRET!);
+  const hmac = crypto.createHmac("sha256", secret);
   const digest = "sha256=" + hmac.update(req.rawBody!).digest("hex");
 
   try {
@@ -44,6 +53,7 @@ router.post("/", async (req: Request, res: Response): Promise<void> => {
     if (event === "installation_repositories") await handleInstallationRepositories(req.body);
     if (event === "repository") await handleRepository(req.body);
     if (event === "github_app_authorization") await handleGithubAppAuthorization(req.body);
+    if (event === "issue_comment") await handleIssueComment(req.body);
   } catch (err) {
     console.error(`[webhook] error processing event=${event} delivery=${delivery}:`, err);
   }

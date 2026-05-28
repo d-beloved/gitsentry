@@ -43,8 +43,12 @@ CREATE TABLE IF NOT EXISTS scans (
   low_count       INT DEFAULT 0,
   status          TEXT DEFAULT 'pending', -- 'pending' | 'complete' | 'failed'
   duration_ms     INT,
+  gh_comment_id   BIGINT,
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- Migration: add gh_comment_id to existing installs
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS gh_comment_id BIGINT;
 
 CREATE TABLE IF NOT EXISTS findings (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),

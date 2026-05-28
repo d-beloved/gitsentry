@@ -10,7 +10,9 @@ import {
   saveFindings,
   updateScanStatus,
   getOrgByRepoId,
-  incrementScanCount,
+  tryClaimScan,
+  getPreviousPRCommentId,
+  updateScanCommentId,
 } from "../../db/queries";
 import { notifyIfNeeded } from "../notifier";
 import type { ScanJobData } from "../../../../../packages/scanner-contract/types";
@@ -34,14 +36,14 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
 
   try {
     const org = await getOrgByRepoId(repoId);
-    const isPro = org?.plan === "pro";
+    const isPro =
+      org?.plan === "pro" &&
+      (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[org?.plan ?? "free"] ?? SCAN_LIMITS.free;
 
     if (org && !isPro) {
-      const currentMonth = new Date().toISOString().slice(0, 7);
-      const scansThisMonth =
-        org.scan_month === currentMonth ? (org.scan_count_month || 0) : 0;
-      if (scansThisMonth >= scanLimit) {
+      const claimed = await tryClaimScan(org.id, scanLimit);
+      if (!claimed) {
         console.log(
           `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
         );
@@ -60,7 +62,13 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       findings = await saveFindings(scanId, issues);
 
       if (prNumber != null) {
-        await postPRReview(repoFullName, prNumber, findings, summary, scanId, installationId);
+        const existingCommentId = await getPreviousPRCommentId(repoId, prNumber);
+        const commentId = await postPRReview(
+          repoFullName, prNumber, findings, summary, scanId, installationId, existingCommentId,
+        );
+        updateScanCommentId(scanId, commentId).catch((err: Error) =>
+          console.error("[worker] updateScanCommentId failed:", err.message),
+        );
       } else if (commitSha) {
         await postCommitComment(
           repoFullName,
@@ -83,12 +91,6 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
     }
 
     await updateScanStatus(scanId, issues, Date.now() - startedAt);
-
-    if (org) {
-      incrementScanCount(org.id).catch((err: Error) =>
-        console.error("[worker] scan count increment failed:", err.message),
-      );
-    }
   } catch (err) {
     console.error(`[worker] Scan ${scanId} failed:`, (err as Error).message);
     await updateScanStatus(scanId, [], 0, "failed").catch(() => {});
