@@ -5,7 +5,7 @@ import {
   SEVERITY_ORDER,
 } from "../../../../packages/scanner-contract/constants";
 import type { Finding, Severity } from "../../../../packages/scanner-contract/types";
-import type { AlertConfigRow } from "../db/types";
+
 
 const FROM_EMAIL = process.env.FROM_EMAIL;
 const PRODUCT_URL = process.env.PRODUCT_URL;
@@ -53,7 +53,7 @@ async function postToSlack(
           issue.description,
           issue.fix_suggestion ? `_Fix: ${issue.fix_suggestion}_` : "",
           issue.id
-            ? `<${PRODUCT_URL}/dashboard/findings/${issue.id}|View finding>  ·  <${PRODUCT_URL}/api/findings/${issue.id}/dismiss|Dismiss>`
+            ? `<${PRODUCT_URL}/dashboard/findings/${issue.id}|View finding>`
             : "",
         ]
           .filter(Boolean)
@@ -221,16 +221,51 @@ export async function notifyIfNeeded(
 ): Promise<void> {
   if (!issues.length) return;
 
-  const { data: config } = await supabase
+  type EffectiveConfig = { slack_webhook: string | null; email: string | null; min_severity: string };
+  let effective: EffectiveConfig | null = null;
+
+  // Per-repo config takes priority
+  const { data: perRepo } = await supabase
     .from("alert_configs")
-    .select("*")
+    .select("slack_webhook, email, min_severity")
     .eq("repo_id", repoId)
     .single();
 
-  if (!config) return;
+  if (perRepo) {
+    effective = perRepo as EffectiveConfig;
+  } else {
+    // Fall back to org-level global defaults
+    const { data: repo } = await supabase
+      .from("repos")
+      .select("org_id")
+      .eq("id", repoId)
+      .single();
 
-  const alertConfig = config as AlertConfigRow;
-  const threshold = SEVERITY_ORDER[alertConfig.min_severity as Severity] ?? 1;
+    if (repo?.org_id) {
+      const { data: org } = await supabase
+        .from("orgs")
+        .select("alert_slack_webhook, alert_email, alert_min_severity, alert_on_main")
+        .eq("id", repo.org_id)
+        .single();
+
+      const orgAny = org as Record<string, unknown> | null;
+      if (orgAny && (orgAny.alert_slack_webhook || orgAny.alert_email)) {
+        // Respect alert_on_main: skip non-default-branch pushes if set
+        const isMainBranch = branch === "main" || branch === "master";
+        if (orgAny.alert_on_main && !isMainBranch && triggerType !== "pull_request") return;
+
+        effective = {
+          slack_webhook: (orgAny.alert_slack_webhook as string | null) ?? null,
+          email: (orgAny.alert_email as string | null) ?? null,
+          min_severity: (orgAny.alert_min_severity as string | null) ?? "high",
+        };
+      }
+    }
+  }
+
+  if (!effective) return;
+
+  const threshold = SEVERITY_ORDER[effective.min_severity as Severity] ?? 1;
   const alertable = issues.filter(
     (i) => (SEVERITY_ORDER[i.severity as Severity] ?? 99) <= threshold,
   );
@@ -239,17 +274,17 @@ export async function notifyIfNeeded(
   const payload = { repoFullName, issues: alertable, triggerType, branch, scanId };
   const promises: Promise<void>[] = [];
 
-  if (alertConfig.slack_webhook) {
+  if (effective.slack_webhook) {
     promises.push(
-      postToSlack(alertConfig.slack_webhook, payload).catch((err: Error) =>
+      postToSlack(effective.slack_webhook, payload).catch((err: Error) =>
         console.error("[notifier] Slack failed:", err.message),
       ),
     );
   }
 
-  if (alertConfig.email) {
+  if (effective.email) {
     promises.push(
-      sendAlertEmail(alertConfig.email, payload).catch((err: Error) =>
+      sendAlertEmail(effective.email, payload).catch((err: Error) =>
         console.error("[notifier] email failed:", err.message),
       ),
     );

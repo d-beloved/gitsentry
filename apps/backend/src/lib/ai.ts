@@ -2,7 +2,10 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 import { extractAdditions } from "./differ";
 import type { AIAnalysisResult, ScanContext } from "../../../../packages/scanner-contract/types";
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
+if (!process.env.GEMINI_API_KEY) {
+  throw new Error("GEMINI_API_KEY is not set — cannot start without AI provider");
+}
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 const CORE_CATEGORIES: [string, string][] = [
   ["hardcoded_secret", "API keys, tokens, passwords, private keys in code"],
