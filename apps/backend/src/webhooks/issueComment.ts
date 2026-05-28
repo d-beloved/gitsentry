@@ -1,4 +1,4 @@
-import {getDiff} from "../lib/github";
+import {getDiff, getInstallationOctokit} from "../lib/github";
 import {
   saveScan,
   getOrgByInstallationId,
@@ -8,22 +8,8 @@ import {
 import {parseDiffStats, truncateDiff} from "../lib/differ";
 import {scanQueue} from "../lib/queue";
 import {processScanJob} from "../lib/workers/scanWorker";
-import {App} from "@octokit/app";
 
 const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50};
-
-function getApp(): App {
-  const appId = process.env.GITHUB_APP_ID;
-  const encodedKey = process.env.GITHUB_APP_PRIVATE_KEY;
-  if (!appId || !encodedKey)
-    throw new Error("Missing GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY");
-  const privateKey = Buffer.from(encodedKey, "base64").toString("utf8");
-  return new App({appId, privateKey});
-}
-
-async function getOctokit(installationId: number) {
-  return getApp().getInstallationOctokit(installationId);
-}
 
 export async function handleIssueComment(
   payload: Record<string, unknown>,
@@ -51,7 +37,7 @@ export async function handleIssueComment(
   const prNumber = issue.number as number;
   const repoFullName = repo.full_name as string;
   const sender = (payload.sender as Record<string, unknown>).login as string;
-  const octokit = await getOctokit(installationId);
+  const octokit = await getInstallationOctokit(installationId);
   const [owner, repoName] = repoFullName.split("/");
 
   // Fetch PR to get current HEAD sha + metadata

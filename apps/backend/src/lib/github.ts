@@ -1,10 +1,10 @@
-import { App } from "@octokit/app";
-import { sortBySeverity, countBySeverity } from "./scorer";
+import {App} from "@octokit/app";
+import {sortBySeverity, countBySeverity} from "./scorer";
 import {
   SEVERITY_EMOJI,
   CATEGORY_LABELS,
 } from "../../../../packages/scanner-contract/constants";
-import type { Finding } from "../../../../packages/scanner-contract/types";
+import type {Finding} from "../../../../packages/scanner-contract/types";
 
 let _app: App | undefined;
 
@@ -20,14 +20,17 @@ function getApp(): App {
     }
 
     const privateKey = Buffer.from(encodedKey, "base64").toString("utf8");
-    _app = new App({ appId, privateKey });
+    _app = new App({appId, privateKey});
   }
   return _app;
 }
 
-async function getOctokit(installationId: number) {
+export async function getInstallationOctokit(installationId: number) {
   return getApp().getInstallationOctokit(installationId);
 }
+
+// Keep the internal alias so existing callers in this file are unchanged
+const getOctokit = getInstallationOctokit;
 
 // ─── GitHub API calls ─────────────────────────────────────────────────────────
 
@@ -45,7 +48,7 @@ export async function getDiff(
       owner,
       repo,
       pull_number: prNumber,
-      headers: { accept: "application/vnd.github.v3.diff" },
+      headers: {accept: "application/vnd.github.v3.diff"},
     },
   );
 
@@ -66,7 +69,7 @@ export async function getPushDiff(
       owner,
       repo,
       ref: commitSha,
-      headers: { accept: "application/vnd.github.v3.diff" },
+      headers: {accept: "application/vnd.github.v3.diff"},
     },
   );
 
@@ -88,16 +91,16 @@ export async function postPRReview(
   const body = formatReviewBody(issues, summary, scanId, !!existingCommentId);
 
   if (existingCommentId) {
-    const { data } = await octokit.request(
+    const {data} = await octokit.request(
       "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
-      { owner, repo, comment_id: existingCommentId, body },
+      {owner, repo, comment_id: existingCommentId, body},
     );
     return data.id;
   }
 
-  const { data } = await octokit.request(
+  const {data} = await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
-    { owner, repo, issue_number: prNumber, body },
+    {owner, repo, issue_number: prNumber, body},
   );
   return data.id;
 }
@@ -139,7 +142,12 @@ function findingDismissUrl(findingId: string): string {
   return `${PRODUCT_URL}/dashboard/findings/${findingId}`;
 }
 
-function formatReviewBody(issues: Finding[], summary: string, scanId: string, isUpdate = false): string {
+function formatReviewBody(
+  issues: Finding[],
+  summary: string,
+  scanId: string,
+  isUpdate = false,
+): string {
   const sorted = sortBySeverity(issues);
   const counts = countBySeverity(issues);
 
@@ -194,7 +202,7 @@ export async function getSweepDiff(
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const { data: commits } = await octokit.request(
+  const {data: commits} = await octokit.request(
     "GET /repos/{owner}/{repo}/commits",
     {
       owner,
@@ -219,7 +227,7 @@ export async function getSweepDiff(
       owner,
       repo,
       basehead: `${base}...${head}`,
-      headers: { accept: "application/vnd.github.v3.diff" },
+      headers: {accept: "application/vnd.github.v3.diff"},
     },
   );
 
@@ -230,7 +238,7 @@ export async function getSweepDiff(
  * Post a GitHub Check Run after a PR scan.
  *
  * Free plan: conclusion is always "neutral" — findings are visible but PRs are never blocked.
- * Pro plan: conclusion is "failure" when critical or high findings exist, enabling branch protection.
+ * Pro plan: conclusion is "failure" when findings exist, enabling branch protection.
  */
 export async function postCheckRun(
   repoFullName: string,
@@ -242,9 +250,6 @@ export async function postCheckRun(
   const [owner, repo] = repoFullName.split("/");
 
   const total = findings.length;
-  const criticalCount = findings.filter((f) => f.severity === "critical").length;
-  const highCount = findings.filter((f) => f.severity === "high").length;
-  const blocking = criticalCount > 0 || highCount > 0;
 
   let conclusion: string;
   let title: string;
@@ -254,21 +259,14 @@ export async function postCheckRun(
     conclusion = "success";
     title = "No security issues found";
     summary = "Gitsentry.dev scanned this PR and found no security issues.";
-  } else if (blocking) {
+  } else {
     conclusion = "failure";
-    const parts: string[] = [];
-    if (criticalCount > 0) parts.push(`${criticalCount} critical`);
-    if (highCount > 0) parts.push(`${highCount} high`);
-    title = `${total} security issue${total !== 1 ? "s" : ""} found (${parts.join(", ")})`;
+    title = `${total} security issue${total !== 1 ? "s" : ""} found`;
     summary =
-      "Gitsentry.dev found blocking security issues. Resolve critical and high severity findings before merging.\n\n" +
+      "Gitsentry.dev found some security issues. Resolve the issues before merging.\n\n" +
       "To dismiss a false positive, visit your [Gitsentry dashboard](" +
       PRODUCT_URL +
       "/dashboard).";
-  } else {
-    conclusion = "neutral";
-    title = `${total} low-severity finding${total !== 1 ? "s" : ""} — informational`;
-    summary = `Gitsentry.dev found ${total} medium/low severity finding${total !== 1 ? "s" : ""}. These are informational and do not block merging.`;
   }
 
   await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
@@ -278,13 +276,91 @@ export async function postCheckRun(
     head_sha: headSha,
     status: "completed",
     conclusion,
-    output: { title, summary },
+    output: {title, summary},
   });
+}
+
+// ─── Branch protection ────────────────────────────────────────────────────────
+
+const CHECK_NAME = "Gitsentry Security Scan";
+
+/**
+ * Ensures the "Gitsentry Security Scan" required status check is present on the
+ * repo's default branch. If branch protection doesn't exist yet, creates minimal
+ * protection (no PR review requirement, no push restrictions, admins not enforced).
+ * If protection already exists, non-destructively adds our check to the existing
+ * required_status_checks list.
+ */
+export async function setupBranchProtection(
+  repoFullName: string,
+  branch: string,
+  installationId: number,
+): Promise<void> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  let hasExistingProtection = false;
+  let existingContexts: string[] = [];
+
+  try {
+    const {data} = await octokit.request(
+      "GET /repos/{owner}/{repo}/branches/{branch}/protection",
+      {owner, repo, branch},
+    );
+    hasExistingProtection = true;
+    existingContexts = data.required_status_checks?.contexts ?? [];
+  } catch {
+    // 404 = no protection yet — handled below
+  }
+
+  if (hasExistingProtection) {
+    if (existingContexts.includes(CHECK_NAME)) return; // already set up
+    await octokit.request(
+      "POST /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks/contexts",
+      {owner, repo, branch, contexts: [CHECK_NAME]},
+    );
+  } else {
+    await octokit.request(
+      "PUT /repos/{owner}/{repo}/branches/{branch}/protection",
+      {
+        owner,
+        repo,
+        branch,
+        required_status_checks: {strict: false, contexts: [CHECK_NAME]},
+        enforce_admins: false,
+        required_pull_request_reviews: null,
+        restrictions: null,
+      },
+    );
+  }
+}
+
+/**
+ * Removes the "Gitsentry Security Scan" required status check from the repo's
+ * default branch. Swallows 404s — if branch protection doesn't exist (e.g.
+ * user deleted it manually), there's nothing to remove.
+ */
+export async function removeBranchProtection(
+  repoFullName: string,
+  branch: string,
+  installationId: number,
+): Promise<void> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  try {
+    await octokit.request(
+      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks/contexts",
+      {owner, repo, branch, contexts: [CHECK_NAME]},
+    );
+  } catch (err) {
+    if ((err as {status?: number}).status !== 404) throw err;
+  }
 }
 
 export async function postUpgradeComment(
   repoFullName: string,
-  target: { prNumber?: number | null; commitSha?: string | null },
+  target: {prNumber?: number | null; commitSha?: string | null},
   installationId: number,
 ): Promise<void> {
   const octokit = await getOctokit(installationId);

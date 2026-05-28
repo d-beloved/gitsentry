@@ -127,7 +127,13 @@ export async function analyzeCode(
   const mode = options.mode === "security_sweep" ? "security_sweep" : "diff_scan";
   const input = mode === "diff_scan" ? extractAdditions(diff) : diff;
   const prompt = buildPrompt(input, context, mode);
-  const result = await model.generateContent(prompt);
+
+  const AI_TIMEOUT_MS = 120_000;
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => reject(new Error(`[ai] Gemini call timed out after ${AI_TIMEOUT_MS / 1000}s`)), AI_TIMEOUT_MS),
+  );
+
+  const result = await Promise.race([model.generateContent(prompt), timeoutPromise]);
   const text = result.response.text();
 
   try {

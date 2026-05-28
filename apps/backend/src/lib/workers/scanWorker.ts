@@ -19,6 +19,15 @@ import type { ScanJobData } from "../../../../../packages/scanner-contract/types
 
 const SCAN_LIMITS: Record<string, number> = { free: 10, starter: 50 };
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`[worker] ${label} timed out after ${ms / 1000}s`)), ms),
+    ),
+  ]);
+}
+
 export async function processScanJob(data: ScanJobData): Promise<void> {
   const {
     scanId,
@@ -63,24 +72,27 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
 
       if (prNumber != null) {
         const existingCommentId = await getPreviousPRCommentId(repoId, prNumber);
-        const commentId = await postPRReview(
-          repoFullName, prNumber, findings, summary, scanId, installationId, existingCommentId,
+        const commentId = await withTimeout(
+          postPRReview(repoFullName, prNumber, findings, summary, scanId, installationId, existingCommentId),
+          30_000,
+          "postPRReview",
         );
         updateScanCommentId(scanId, commentId).catch((err: Error) =>
           console.error("[worker] updateScanCommentId failed:", err.message),
         );
       } else if (commitSha) {
-        await postCommitComment(
-          repoFullName,
-          commitSha,
-          findings,
-          summary,
-          scanId,
-          installationId,
+        await withTimeout(
+          postCommitComment(repoFullName, commitSha, findings, summary, scanId, installationId),
+          30_000,
+          "postCommitComment",
         );
       }
 
-      await notifyIfNeeded(repoId, repoFullName, findings, triggerType, branch, scanId);
+      await withTimeout(
+        notifyIfNeeded(repoId, repoFullName, findings, triggerType, branch, scanId),
+        30_000,
+        "notifyIfNeeded",
+      );
     }
 
     // Check Run — Pro plan only

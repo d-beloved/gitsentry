@@ -1,33 +1,18 @@
 import express, {Request, Response, NextFunction} from "express";
-import {getDiff} from "../lib/github";
+import {getDiff, getInstallationOctokit} from "../lib/github";
 import {
   saveScan,
   getOrgByRepoId,
-  tryClaimScan,
   verifyRepoInstallation,
   getRepoRow,
 } from "../db/queries";
 import {parseDiffStats, truncateDiff} from "../lib/differ";
 import {scanQueue} from "../lib/queue";
 import {processScanJob} from "../lib/workers/scanWorker";
-import {App} from "@octokit/app";
 
 const router = express.Router();
 
 const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50};
-
-function getApp(): App {
-  const appId = process.env.GITHUB_APP_ID;
-  const encodedKey = process.env.GITHUB_APP_PRIVATE_KEY;
-  if (!appId || !encodedKey)
-    throw new Error("Missing GITHUB_APP_ID or GITHUB_APP_PRIVATE_KEY");
-  const privateKey = Buffer.from(encodedKey, "base64").toString("utf8");
-  return new App({appId, privateKey});
-}
-
-async function getOctokit(installationId: number) {
-  return getApp().getInstallationOctokit(installationId);
-}
 
 function verifyInternalKey(req: Request, res: Response, next: NextFunction): void {
   const key = process.env.INTERNAL_API_KEY;
@@ -81,25 +66,22 @@ router.post(
       (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
 
-    if (org && !isPro) {
-      const claimed = await tryClaimScan(org.id, scanLimit);
-      if (!claimed) {
-        res.status(402).json({
-          error: `Monthly scan limit reached on the ${plan} plan.`,
-          remaining: 0,
-          upgradeUrl: `${process.env.PRODUCT_URL}/dashboard/billing`,
-        });
-        return;
-      }
-    }
-
-    // Compute remaining after claim for display
+    // Compute remaining for display (worker handles the actual quota claim)
     const currentMonth = new Date().toISOString().slice(0, 7);
     const scansUsedBefore =
       org?.scan_month === currentMonth ? (org?.scan_count_month ?? 0) : 0;
-    const remaining = isPro ? null : Math.max(0, scanLimit - scansUsedBefore - 1);
+    const remaining = isPro ? null : Math.max(0, scanLimit - scansUsedBefore);
 
-    const octokit = await getOctokit(installationId);
+    if (!isPro && scansUsedBefore >= scanLimit) {
+      res.status(402).json({
+        error: `Monthly scan limit reached on the ${plan} plan.`,
+        remaining: 0,
+        upgradeUrl: `${process.env.PRODUCT_URL}/dashboard/billing`,
+      });
+      return;
+    }
+
+    const octokit = await getInstallationOctokit(installationId);
     const [owner, repoName] = repoRow.full_name.split("/");
 
     const {data: pr} = await octokit.request(
