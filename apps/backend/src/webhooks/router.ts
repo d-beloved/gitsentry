@@ -22,8 +22,10 @@ function verifySignature(req: Request): boolean {
   const sig = req.headers["x-hub-signature-256"];
   if (!sig) return false;
 
+  if (!req.rawBody) return false;
+
   const hmac = crypto.createHmac("sha256", secret);
-  const digest = "sha256=" + hmac.update(req.rawBody!).digest("hex");
+  const digest = "sha256=" + hmac.update(req.rawBody).digest("hex");
 
   try {
     return crypto.timingSafeEqual(Buffer.from(sig as string), Buffer.from(digest));

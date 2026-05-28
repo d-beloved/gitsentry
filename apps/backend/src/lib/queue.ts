@@ -1,14 +1,17 @@
 import Bull from "bull";
 import type { ScanJobData } from "../../../../packages/scanner-contract/types";
+import { processScanJob } from "./workers/scanWorker";
 
 let scanQueue: Bull.Queue<ScanJobData> | null = null;
 
 if (process.env.REDIS_URL) {
   try {
+    const isTLS = process.env.REDIS_URL.startsWith("rediss://");
     scanQueue = new Bull<ScanJobData>("scan", process.env.REDIS_URL, {
       redis: {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
+        ...(isTLS ? { tls: { rejectUnauthorized: false } } : {}),
       },
       defaultJobOptions: {
         attempts: 3,
@@ -43,3 +46,30 @@ if (process.env.REDIS_URL) {
 }
 
 export { scanQueue };
+
+/**
+ * Fire-and-forget scan dispatch. Tries Bull with a 5s timeout; falls back to
+ * inline processScanJob if Bull is unreachable or the add times out. Never
+ * blocks the caller — safe to call without await.
+ */
+export function dispatchScan(jobData: ScanJobData, label: string): void {
+  if (scanQueue) {
+    Promise.race([
+      scanQueue.add(jobData),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("queue timeout")), 5_000)
+      ),
+    ])
+      .then(() => { /* queued */ })
+      .catch((err: Error) => {
+        console.warn(`[${label}] Bull add failed, scanning inline:`, err.message);
+        processScanJob(jobData).catch((e: Error) =>
+          console.error(`[${label}] inline scan failed:`, e.message)
+        );
+      });
+  } else {
+    processScanJob(jobData).catch((err: Error) =>
+      console.error(`[${label}] inline scan failed:`, err.message)
+    );
+  }
+}

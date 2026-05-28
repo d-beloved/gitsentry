@@ -1,8 +1,7 @@
 import { getDiff } from "../lib/github";
 import { saveScan, getOrgByInstallationId } from "../db/queries";
 import { parseDiffStats, truncateDiff } from "../lib/differ";
-import { scanQueue } from "../lib/queue";
-import { processScanJob } from "../lib/workers/scanWorker";
+import { dispatchScan } from "../lib/queue";
 
 /**
  * Handles check_run: rerequested — fired when a Pro user clicks "Re-run"
@@ -85,14 +84,5 @@ export async function handleCheckRun(payload: Record<string, unknown>): Promise<
     `[check_run] Re-run requested by ${sender?.login} for ${repo.full_name}#${prNumber}`,
   );
 
-  if (scanQueue) {
-    await scanQueue.add(jobData);
-  } else {
-    processScanJob(jobData).catch((err: Error) =>
-      console.error(
-        `[check_run] Inline scan failed for ${repo.full_name}#${prNumber}:`,
-        err.message,
-      ),
-    );
-  }
+  dispatchScan(jobData, `check_run ${repo.full_name}#${prNumber}`);
 }

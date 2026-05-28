@@ -1,8 +1,7 @@
 import { getDiff } from "../lib/github";
 import { saveScan, getOrgByInstallationId, scanExistsForCommit } from "../db/queries";
 import { parseDiffStats, truncateDiff } from "../lib/differ";
-import { scanQueue } from "../lib/queue";
-import { processScanJob } from "../lib/workers/scanWorker";
+import { dispatchScan } from "../lib/queue";
 
 export async function handlePR(payload: Record<string, unknown>): Promise<void> {
   const action = payload.action as string;
@@ -85,14 +84,5 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     triggerType: "pull_request",
   };
 
-  if (scanQueue) {
-    await scanQueue.add(jobData);
-  } else {
-    processScanJob(jobData).catch((err: Error) =>
-      console.error(
-        `[PR] Inline scan failed for ${repo.full_name}#${pr.number}:`,
-        err.message,
-      ),
-    );
-  }
+  dispatchScan(jobData, `PR ${repo.full_name}#${pr.number}`);
 }

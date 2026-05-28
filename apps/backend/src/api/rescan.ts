@@ -7,8 +7,7 @@ import {
   getRepoRow,
 } from "../db/queries";
 import {parseDiffStats, truncateDiff} from "../lib/differ";
-import {scanQueue} from "../lib/queue";
-import {processScanJob} from "../lib/workers/scanWorker";
+import {dispatchScan} from "../lib/queue";
 
 const router = express.Router();
 
@@ -133,14 +132,7 @@ router.post(
       triggerType: "pull_request",
     };
 
-    if (scanQueue) {
-      await scanQueue.add(jobData);
-    } else {
-      processScanJob(jobData).catch((err: Error) =>
-        console.error(`[rescan] inline scan failed for ${repoRow.full_name}#${prNumber}:`, err.message),
-      );
-    }
-
+    dispatchScan(jobData, `rescan ${repoRow.full_name}#${prNumber}`);
     res.json({scanId: scan.id, remaining, plan});
   },
 );

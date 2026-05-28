@@ -3,11 +3,9 @@ import {
   saveScan,
   getOrgByInstallationId,
   tryClaimScan,
-  scanExistsForCommit,
 } from "../db/queries";
 import {parseDiffStats, truncateDiff} from "../lib/differ";
-import {scanQueue} from "../lib/queue";
-import {processScanJob} from "../lib/workers/scanWorker";
+import {dispatchScan} from "../lib/queue";
 
 const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50};
 
@@ -156,11 +154,5 @@ export async function handleIssueComment(
     triggerType: "pull_request",
   };
 
-  if (scanQueue) {
-    await scanQueue.add(jobData);
-  } else {
-    processScanJob(jobData).catch((err: Error) =>
-      console.error(`[issue_comment] inline scan failed for ${repoFullName}#${prNumber}:`, err.message),
-    );
-  }
+  dispatchScan(jobData, `issue_comment ${repoFullName}#${prNumber}`);
 }
