@@ -6,7 +6,6 @@ import type {
   RepoRow,
   ScanRow,
   PublicStatsRow,
-  OrgSummary,
   OrgWithUsage,
 } from "./types";
 
@@ -63,13 +62,13 @@ export async function getOrCreateRepo(
 
 export async function getOrgByInstallationId(
   installationId: number,
-): Promise<OrgSummary | null> {
+): Promise<OrgWithUsage | null> {
   const {data} = await supabase
     .from("installations")
-    .select("org_id, orgs(id, plan)")
+    .select("org_id, orgs(id, plan, subscription_status, scan_count_month, scan_month, sweep_trials_used)")
     .eq("github_install_id", installationId)
     .single();
-  return (data?.orgs as unknown as OrgSummary) ?? null;
+  return (data?.orgs as unknown as OrgWithUsage) ?? null;
 }
 
 // ─── Scans ────────────────────────────────────────────────────────────────────
@@ -341,7 +340,10 @@ export async function tryClaimSweepTrial(orgId: string): Promise<boolean> {
     .eq("sweep_trials_used", 0)
     .select("id");
   if (error) {
-    console.error("[db] tryClaimSweepTrial error:", error.message);
+    console.error(
+      "[db] tryClaimSweepTrial error — sweep requests will be BLOCKED for non-pro orgs until resolved:",
+      error.message,
+    );
     return false;
   }
   return !!((data as Array<{id: string}> | null)?.length);
@@ -467,9 +469,12 @@ export async function tryClaimScan(
     p_limit: scanLimit,
   });
   if (error) {
-    console.error("[db] tryClaimScan rpc error:", error.message);
-    // Fall back to permitting the scan rather than silently blocking all scans
-    // if the function hasn't been created yet.
+    console.error(
+      "[db] tryClaimScan rpc error — quota enforcement is DISABLED (fail-open) until resolved:",
+      error.message,
+    );
+    // Fail open rather than silently blocking all scans when the RPC is missing.
+    // Ensure the try_claim_scan function exists in your Supabase project.
     return true;
   }
   return !!data;

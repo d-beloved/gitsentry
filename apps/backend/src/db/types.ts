@@ -65,12 +65,12 @@ export interface PublicStatsRow {
 export interface OrgSummary {
   id: string;
   plan: OrgPlan;
+  subscription_status: string | null;
 }
 
-/** Extended org shape used for scan-limit gating in the worker */
+/** Extended org shape used for scan-limit gating in the worker and sweep enforcement */
 export interface OrgWithUsage extends OrgSummary {
   scan_count_month: number | null;
   scan_month: string | null;
   sweep_trials_used: number;
-  subscription_status: string | null;
 }

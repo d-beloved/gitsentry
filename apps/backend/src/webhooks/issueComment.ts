@@ -49,9 +49,12 @@ export async function handleIssueComment(
   const prAuthor = pr.user?.login ?? null;
   const isPrivate = (repo.private as boolean) ?? false;
 
+  // getOrgByInstallationId now returns OrgWithUsage including subscription_status
   const org = await getOrgByInstallationId(installationId);
   const plan = org?.plan ?? "free";
-  const isPro = plan === "pro";
+  const isPro =
+    plan === "pro" &&
+    (org?.subscription_status === "active" || org?.subscription_status == null);
 
   // Quota check for non-pro plans
   if (!isPro) {
@@ -80,17 +83,18 @@ export async function handleIssueComment(
     }
   }
 
-  // Post acknowledgment immediately so the user knows something is happening
+  // Post acknowledgment immediately so the user knows something is happening.
+  // org is OrgWithUsage so scan_count_month / scan_month are available directly.
   const currentMonth = new Date().toISOString().slice(0, 7);
-  const orgData = org as (typeof org & {scan_count_month?: number | null; scan_month?: string | null}) | null;
   const scansUsed =
-    orgData?.scan_month === currentMonth ? (orgData?.scan_count_month ?? 0) : 0;
+    org?.scan_month === currentMonth ? (org?.scan_count_month ?? 0) : 0;
   const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
   const remaining = isPro ? null : Math.max(0, scanLimit - scansUsed - 1);
 
-  const quotaLine = remaining !== null
-    ? `_This scan uses 1 of your ${remaining} remaining scans this month._`
-    : "";
+  const quotaLine =
+    remaining !== null
+      ? `_This scan uses 1 of your ${remaining} remaining scans this month._`
+      : "";
 
   await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
