@@ -5,6 +5,7 @@ import {
   postCommitComment,
   postCheckRun,
   postUpgradeComment,
+  setupBranchProtection,
 } from "../github";
 import {
   saveFindings,
@@ -97,6 +98,13 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
 
     // Check Run — Pro plan only
     if (prNumber != null && commitSha && isPro) {
+      // Lazily ensure branch protection is set up for repos that existed before
+      // the auto-setup feature was deployed (installationRepositories only covers
+      // repos added after deployment).
+      setupBranchProtection(repoFullName, branch ?? "main", installationId).catch(
+        (err: Error) =>
+          console.error("[worker] lazy branch protection setup failed:", err.message),
+      );
       postCheckRun(repoFullName, commitSha, findings, installationId).catch((err: Error) =>
         console.error("[worker] check run failed:", err.message),
       );
