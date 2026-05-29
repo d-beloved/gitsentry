@@ -41,6 +41,7 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
     commitSha,
     branch,
     triggerType,
+    quotaAlreadyClaimed,
   } = data;
   const startedAt = Date.now();
 
@@ -51,7 +52,10 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[org?.plan ?? "free"] ?? SCAN_LIMITS.free;
 
-    if (org && !isPro) {
+    // Skip the quota claim when the caller already claimed it atomically (rescan
+    // endpoint, issue_comment webhook). Only claim here for push/PR webhook scans
+    // where no prior claim was made.
+    if (org && !isPro && !quotaAlreadyClaimed) {
       const claimed = await tryClaimScan(org.id, scanLimit);
       if (!claimed) {
         console.log(

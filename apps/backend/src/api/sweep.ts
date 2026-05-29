@@ -6,6 +6,9 @@ import {
   saveFindings,
   updateScanStatus,
   verifyRepoInstallation,
+  getOrgByRepoId,
+  tryClaimSweepTrial,
+  refundSweepTrial,
 } from "../db/queries";
 import {truncateDiff} from "../lib/differ";
 
@@ -63,12 +66,36 @@ router.post(
       return;
     }
 
+    // Enforce sweep trial limit for non-pro plans
+    const org = await getOrgByRepoId(repoId);
+    const plan = org?.plan ?? "free";
+    const isPro =
+      plan === "pro" &&
+      (org?.subscription_status === "active" || org?.subscription_status == null);
+
+    if (!isPro) {
+      if (!org) {
+        res.status(403).json({error: "Organisation not found for this repo"});
+        return;
+      }
+      const claimed = await tryClaimSweepTrial(org.id);
+      if (!claimed) {
+        res.status(402).json({
+          error: `Sweep trial already used on the ${plan} plan. Upgrade to Pro for unlimited sweeps.`,
+          upgradeUrl: `${process.env.PRODUCT_URL}/dashboard/billing`,
+        });
+        return;
+      }
+    }
+
     const startedAt = Date.now();
     let scan: {id: string} | undefined;
 
     try {
       const diff = await getSweepDiff(repoFullName, branch, installationId);
       if (!diff || diff.length < 10) {
+        // Refund the trial — no scan was actually run
+        if (!isPro && org) await refundSweepTrial(org.id).catch(() => {});
         res
           .status(422)
           .json({error: "No diff found — push some commits first"});
@@ -118,6 +145,8 @@ router.post(
       if (scan) {
         await updateScanStatus(scan.id, [], 0, "failed").catch(() => {});
       }
+      // Refund the trial on unexpected failure so the user isn't charged for a broken sweep
+      if (!isPro && org) await refundSweepTrial(org.id).catch(() => {});
       // Return a generic message — never expose raw Error.message to callers.
       res.status(500).json({error: "Sweep failed. Please try again."});
     }

@@ -331,18 +331,27 @@ export async function saveSweepScan(
   return data as ScanRow;
 }
 
-export async function incrementSweepTrials(orgId: string): Promise<void> {
-  const {data: org} = await supabase
+// Atomically claims the one-time sweep trial for non-pro orgs.
+// Returns true if the slot was claimed (sweep_trials_used was 0), false if already used.
+export async function tryClaimSweepTrial(orgId: string): Promise<boolean> {
+  const {data, error} = await supabase
     .from("orgs")
-    .select("sweep_trials_used")
+    .update({sweep_trials_used: 1})
     .eq("id", orgId)
-    .single();
+    .eq("sweep_trials_used", 0)
+    .select("id");
+  if (error) {
+    console.error("[db] tryClaimSweepTrial error:", error.message);
+    return false;
+  }
+  return !!((data as Array<{id: string}> | null)?.length);
+}
 
+// Resets sweep_trials_used to 0 — called when the sweep fails before producing results.
+export async function refundSweepTrial(orgId: string): Promise<void> {
   await supabase
     .from("orgs")
-    .update({
-      sweep_trials_used: ((org as OrgRow | null)?.sweep_trials_used ?? 0) + 1,
-    })
+    .update({sweep_trials_used: 0})
     .eq("id", orgId);
 }
 
@@ -446,7 +455,6 @@ export async function verifyRepoInstallation(
 
 // Atomically checks the monthly scan limit and increments the counter in one
 // operation, eliminating the TOCTOU race in the old SELECT-then-UPDATE pattern.
-
 // Returns true if a scan slot was claimed, false if the limit was already reached.
 export async function tryClaimScan(
   orgId: string,

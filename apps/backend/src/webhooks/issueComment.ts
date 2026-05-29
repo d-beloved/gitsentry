@@ -86,7 +86,7 @@ export async function handleIssueComment(
   const scansUsed =
     orgData?.scan_month === currentMonth ? (orgData?.scan_count_month ?? 0) : 0;
   const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
-  const remaining = isPro ? null : Math.max(0, scanLimit - scansUsed);
+  const remaining = isPro ? null : Math.max(0, scanLimit - scansUsed - 1);
 
   const quotaLine = remaining !== null
     ? `_This scan uses 1 of your ${remaining} remaining scans this month._`
@@ -152,6 +152,7 @@ export async function handleIssueComment(
     commitSha,
     branch: prRef,
     triggerType: "pull_request",
+    quotaAlreadyClaimed: true,
   };
 
   dispatchScan(jobData, `issue_comment ${repoFullName}#${prNumber}`);

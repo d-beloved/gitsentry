@@ -5,6 +5,7 @@ import {
   getOrgByRepoId,
   verifyRepoInstallation,
   getRepoRow,
+  tryClaimScan,
 } from "../db/queries";
 import {parseDiffStats, truncateDiff} from "../lib/differ";
 import {dispatchScan} from "../lib/queue";
@@ -65,20 +66,25 @@ router.post(
       (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
 
-    // Compute remaining for display (worker handles the actual quota claim)
+    // Atomically claim a scan slot before doing any GitHub API work.
+    // quotaAlreadyClaimed is set on the job so the worker skips its own claim.
+    if (!isPro) {
+      const claimed = org ? await tryClaimScan(org.id, scanLimit) : false;
+      if (!claimed) {
+        res.status(402).json({
+          error: `Monthly scan limit reached on the ${plan} plan.`,
+          remaining: 0,
+          upgradeUrl: `${process.env.PRODUCT_URL}/dashboard/billing`,
+        });
+        return;
+      }
+    }
+
+    // Advisory remaining count derived from the snapshot fetched above (one slot already claimed)
     const currentMonth = new Date().toISOString().slice(0, 7);
     const scansUsedBefore =
       org?.scan_month === currentMonth ? (org?.scan_count_month ?? 0) : 0;
-    const remaining = isPro ? null : Math.max(0, scanLimit - scansUsedBefore);
-
-    if (!isPro && scansUsedBefore >= scanLimit) {
-      res.status(402).json({
-        error: `Monthly scan limit reached on the ${plan} plan.`,
-        remaining: 0,
-        upgradeUrl: `${process.env.PRODUCT_URL}/dashboard/billing`,
-      });
-      return;
-    }
+    const remaining = isPro ? null : Math.max(0, scanLimit - scansUsedBefore - 1);
 
     const octokit = await getInstallationOctokit(installationId);
     const [owner, repoName] = repoRow.full_name.split("/");
@@ -130,6 +136,7 @@ router.post(
       commitSha,
       branch: prRef,
       triggerType: "pull_request",
+      quotaAlreadyClaimed: true,
     };
 
     dispatchScan(jobData, `rescan ${repoRow.full_name}#${prNumber}`);

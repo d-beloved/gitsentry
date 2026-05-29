@@ -111,4 +111,7 @@ export interface ScanJobData {
   commitSha?: string | null;
   branch: string;
   triggerType: string;
+  // Set to true when the caller already atomically claimed a quota slot before
+  // dispatching. The worker skips its own tryClaimScan to prevent double-counting.
+  quotaAlreadyClaimed?: boolean;
 }
