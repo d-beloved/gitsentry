@@ -125,6 +125,10 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS evidence              TEXT;
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS confidence            TEXT;
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS attacker_profile      TEXT;
 
+-- Phase 5: stale findings — auto-labelled when a newer scan of the same
+-- trigger no longer reproduces the issue (e.g. PR updated after a fix).
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS is_stale BOOLEAN DEFAULT FALSE;
+
 -- Phase 4: store installation_id on repos so sweep can authenticate GitHub calls
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS installation_id BIGINT;
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS default_branch   TEXT DEFAULT 'main';
@@ -155,4 +159,58 @@ CREATE INDEX IF NOT EXISTS idx_findings_scan_id      ON findings(scan_id);
 CREATE INDEX IF NOT EXISTS idx_findings_repo_id      ON findings(repo_id);
 CREATE INDEX IF NOT EXISTS idx_findings_severity     ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_is_resolved  ON findings(is_resolved);
+CREATE INDEX IF NOT EXISTS idx_findings_is_stale     ON findings(is_stale);
 CREATE INDEX IF NOT EXISTS idx_installations_installer ON installations(installer_github_id);
+
+-- ── RPC functions ─────────────────────────────────────────────────────────────
+
+-- Atomically claims a monthly scan slot for an org.
+-- Returns TRUE if a slot was granted, FALSE if the monthly limit is already reached.
+-- Uses SELECT...FOR UPDATE to eliminate the TOCTOU race between reading the
+-- counter and incrementing it. Called by tryClaimScan() in queries.ts.
+CREATE OR REPLACE FUNCTION try_claim_scan(
+  p_org_id  UUID,
+  p_month   TEXT,
+  p_limit   INT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_count INT;
+  v_month TEXT;
+BEGIN
+  -- Lock the row exclusively to prevent concurrent claims for the same org
+  SELECT scan_count_month, scan_month
+    INTO v_count, v_month
+    FROM orgs
+   WHERE id = p_org_id
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  -- New billing month: reset counter and grant the slot
+  IF v_month IS DISTINCT FROM p_month THEN
+    UPDATE orgs
+       SET scan_count_month = 1,
+           scan_month       = p_month
+     WHERE id = p_org_id;
+    RETURN TRUE;
+  END IF;
+
+  -- Same month and limit already reached: deny
+  IF v_count >= p_limit THEN
+    RETURN FALSE;
+  END IF;
+
+  -- Claim one slot
+  UPDATE orgs
+     SET scan_count_month = v_count + 1
+   WHERE id = p_org_id;
+
+  RETURN TRUE;
+END;
+$$;

@@ -187,6 +187,9 @@ export async function updateScanStatus(
     updatePublicStats({findings: issues.length, critical}).catch((err) => {
       console.error("[stats] update failed:", err);
     });
+    markStaleFindings(scanId).catch((err) => {
+      console.error("[staleness] mark stale failed:", err);
+    });
   }
 }
 
@@ -273,7 +276,10 @@ async function updatePublicStats(params: {
   findings: number;
   critical: number;
 }): Promise<void> {
-  const existing = await getPublicStats();
+  const [existing, {count: repoCount}] = await Promise.all([
+    getPublicStats(),
+    supabase.from("repos").select("id", {count: "exact", head: true}),
+  ]);
   if (!existing) return;
 
   const {error} = await supabase
@@ -282,11 +288,43 @@ async function updatePublicStats(params: {
       total_scans: Number(existing.total_scans ?? 0) + 1,
       total_findings: Number(existing.total_findings ?? 0) + params.findings,
       critical_caught: Number(existing.critical_caught ?? 0) + params.critical,
+      total_repos: repoCount ?? existing.total_repos,
       updated_at: new Date().toISOString(),
     })
     .eq("id", existing.id);
 
   if (error) throw new Error(`updatePublicStats: ${error.message}`);
+}
+
+// Marks open findings from previous scans of the same repo+trigger as stale
+// when a newer scan completes. Called automatically after every successful scan.
+async function markStaleFindings(scanId: string): Promise<void> {
+  const {data: scan} = await supabase
+    .from("scans")
+    .select("repo_id, trigger_ref, trigger_type")
+    .eq("id", scanId)
+    .single();
+
+  if (!scan) return;
+
+  const {data: prevScans} = await supabase
+    .from("scans")
+    .select("id")
+    .eq("repo_id", (scan as {repo_id: string; trigger_ref: string; trigger_type: string}).repo_id)
+    .eq("trigger_ref", (scan as {repo_id: string; trigger_ref: string; trigger_type: string}).trigger_ref)
+    .eq("trigger_type", (scan as {repo_id: string; trigger_ref: string; trigger_type: string}).trigger_type)
+    .eq("status", "complete")
+    .neq("id", scanId);
+
+  if (!prevScans?.length) return;
+
+  await supabase
+    .from("findings")
+    .update({is_stale: true})
+    .in("scan_id", prevScans.map((s) => (s as {id: string}).id))
+    .eq("is_resolved", false)
+    .eq("is_false_positive", false)
+    .eq("is_stale", false);
 }
 
 export async function getPublicStats(): Promise<PublicStatsRow | null> {
@@ -440,19 +478,34 @@ export async function getRepoRow(
 }
 
 // Confirms that the given repo is actually owned by the given GitHub App
-// installation. Used by the sweep endpoint to prevent IDOR where a caller
-// mixes a repoId from org A with an installationId from org B.
+// installation by cross-referencing the installations table. This prevents IDOR
+// where a caller mixes a repoId from org A with an installationId from org B,
+// and also guards against a stale installation_id column on the repos row.
 export async function verifyRepoInstallation(
   repoId: string,
   installationId: number,
 ): Promise<boolean> {
-  const {data} = await supabase
+  // Primary check: the repo's recorded installation_id must match
+  const {data: repoData} = await supabase
     .from("repos")
-    .select("id")
+    .select("id, org_id")
     .eq("id", repoId)
     .eq("installation_id", installationId)
     .single();
-  return !!data;
+
+  if (!repoData) return false;
+
+  // Secondary check: cross-reference through the installations table to confirm
+  // the installation actually belongs to the same org as the repo, guarding
+  // against a stale installation_id in the repos row.
+  const {data: installData} = await supabase
+    .from("installations")
+    .select("org_id")
+    .eq("github_install_id", installationId)
+    .single();
+
+  if (!installData?.org_id) return false;
+  return installData.org_id === (repoData as {id: string; org_id: string | null}).org_id;
 }
 
 // Atomically checks the monthly scan limit and increments the counter in one
@@ -469,13 +522,13 @@ export async function tryClaimScan(
     p_limit: scanLimit,
   });
   if (error) {
+    // Fail closed: a broken quota mechanism must block scans rather than grant
+    // unlimited free access. Operators must ensure try_claim_scan exists in Supabase.
     console.error(
-      "[db] tryClaimScan rpc error — quota enforcement is DISABLED (fail-open) until resolved:",
+      "[db] tryClaimScan rpc error — quota enforcement BLOCKED (fail-closed). Ensure the try_claim_scan function exists in your Supabase project:",
       error.message,
     );
-    // Fail open rather than silently blocking all scans when the RPC is missing.
-    // Ensure the try_claim_scan function exists in your Supabase project.
-    return true;
+    return false;
   }
   return !!data;
 }

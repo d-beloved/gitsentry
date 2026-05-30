@@ -57,6 +57,7 @@ export interface PublicStatsRow {
   id: string;
   total_scans: number;
   total_findings: number;
+  total_repos: number;
   critical_caught: number;
   updated_at: string;
 }
