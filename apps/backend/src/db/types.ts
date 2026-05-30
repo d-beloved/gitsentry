@@ -23,6 +23,7 @@ export interface RepoRow {
   installation_id: number | null;
   is_private: boolean;
   is_active: boolean;
+  security_context: string | null;
 }
 
 export interface ScanRow {

@@ -47,6 +47,61 @@ export function truncateDiff(diffText: string, maxBytes: number = MAX_DIFF_BYTES
   return diffText.slice(0, maxBytes) + "\n\n[diff truncated]";
 }
 
+/**
+ * Extracts added lines plus surrounding unchanged context lines from a diff.
+ * Sending context lines lets the AI see auth checks, middleware, and guards
+ * that appear near (but not inside) the changed hunk, which reduces false
+ * positives for patterns like fetch-then-ownership-check.
+ *
+ * Format:
+ *   + L24: <added line>
+ *     L22: <unchanged context line>
+ */
+export function extractWithContext(
+  diffText: string | null | undefined,
+  maxBytes: number = MAX_DIFF_BYTES,
+): string {
+  if (!diffText) return "";
+
+  const parts: string[] = [];
+  try {
+    const files = parseDiff(diffText);
+    for (const file of files) {
+      const filePath = file.to ?? file.from ?? "unknown";
+      if (SKIP_FILE_PATTERNS.some((p) => p.test(filePath))) continue;
+
+      const hasAdditions = file.chunks.some((chunk) =>
+        chunk.changes.some((c) => c.type === "add"),
+      );
+      if (!hasAdditions) continue;
+
+      parts.push(`=== ${filePath} ===`);
+      for (const chunk of file.chunks) {
+        parts.push(chunk.content); // @@ hunk header
+        for (const change of chunk.changes) {
+          if (change.type === "add") {
+            parts.push(`+ L${change.ln}: ${change.content.slice(1)}`);
+          } else if (change.type === "normal") {
+            // ln2 = line number in the new file for unchanged context lines
+            const ln = (change as { ln2?: number; ln1?: number }).ln2 ?? (change as { ln1?: number }).ln1 ?? "";
+            parts.push(`  L${ln}: ${change.content.slice(1)}`);
+          }
+          // deletions omitted — gone from the new file
+        }
+      }
+    }
+  } catch {
+    // parse-diff can choke on unusual diffs — fall back to raw diff
+    return diffText.slice(0, maxBytes);
+  }
+
+  const result = parts.join("\n");
+  return result.length > maxBytes
+    ? result.slice(0, maxBytes) + "\n[DIFF TRUNCATED]"
+    : result;
+}
+
+/** @deprecated Use extractWithContext instead — this loses surrounding auth checks. */
 export function extractAdditions(
   diffText: string | null | undefined,
   maxBytes: number = MAX_DIFF_BYTES,
@@ -74,7 +129,6 @@ export function extractAdditions(
       parts.push(...added);
     }
   } catch {
-    // parse-diff can choke on unusual diffs — fall back to raw diff
     return diffText.slice(0, maxBytes);
   }
 

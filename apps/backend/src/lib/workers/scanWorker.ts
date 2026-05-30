@@ -1,11 +1,12 @@
 import type Bull from "bull";
-import { analyzeCode } from "../ai";
+import { analyzeCode, discoverSecurityContext } from "../ai";
 import {
   postPRReview,
   postCommitComment,
   postCheckRun,
   postUpgradeComment,
   setupBranchProtection,
+  fetchRepoAuthFiles,
 } from "../github";
 import {
   saveFindings,
@@ -14,6 +15,8 @@ import {
   tryClaimScan,
   getPreviousPRCommentId,
   updateScanCommentId,
+  getRepoSecurityContext,
+  saveRepoSecurityContext,
 } from "../../db/queries";
 import { notifyIfNeeded } from "../notifier";
 import type { ScanJobData } from "../../../../../packages/scanner-contract/types";
@@ -69,7 +72,29 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       }
     }
 
-    const { issues, summary } = await analyzeCode(diff, context);
+    // Fetch or discover the per-repo security context so the AI understands
+    // this codebase's auth and rate-limit patterns before scanning.
+    let repoSecurityContext = await getRepoSecurityContext(repoId);
+    if (!repoSecurityContext) {
+      try {
+        const authFiles = await fetchRepoAuthFiles(repoFullName, branch, installationId);
+        if (authFiles.length > 0) {
+          repoSecurityContext = await discoverSecurityContext(authFiles, repoFullName);
+          if (repoSecurityContext) {
+            saveRepoSecurityContext(repoId, repoSecurityContext).catch((err: Error) =>
+              console.error("[worker] saveRepoSecurityContext failed:", err.message),
+            );
+          }
+        }
+      } catch (err) {
+        console.warn("[worker] security context discovery failed — scanning without it:", (err as Error).message);
+      }
+    }
+
+    const { issues, summary } = await analyzeCode(diff, {
+      ...context,
+      repoSecurityContext,
+    });
 
     let findings: Awaited<ReturnType<typeof saveFindings>> = [];
     if (issues.length > 0) {

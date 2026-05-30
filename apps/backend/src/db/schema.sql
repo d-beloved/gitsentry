@@ -129,6 +129,11 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS attacker_profile      TEXT;
 -- trigger no longer reproduces the issue (e.g. PR updated after a fix).
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS is_stale BOOLEAN DEFAULT FALSE;
 
+-- Phase 6: per-repo security context — auto-discovered on first scan and
+-- updated as developers dismiss false positives. Injected into the AI prompt
+-- so the scanner understands this repo's auth and rate-limit patterns.
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS security_context TEXT;
+
 -- Phase 4: store installation_id on repos so sweep can authenticate GitHub calls
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS installation_id BIGINT;
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS default_branch   TEXT DEFAULT 'main';

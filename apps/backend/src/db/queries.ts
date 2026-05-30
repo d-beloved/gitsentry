@@ -508,6 +508,51 @@ export async function verifyRepoInstallation(
   return installData.org_id === (repoData as {id: string; org_id: string | null}).org_id;
 }
 
+// ─── Repo security context ────────────────────────────────────────────────────
+
+/** Returns the stored per-repo security context, or null if not yet discovered. */
+export async function getRepoSecurityContext(repoId: string): Promise<string | null> {
+  const {data} = await supabase
+    .from("repos")
+    .select("security_context")
+    .eq("id", repoId)
+    .single();
+  return (data as {security_context: string | null} | null)?.security_context ?? null;
+}
+
+/** Persists the per-repo security context (discovered patterns + learned false-positive rules). */
+export async function saveRepoSecurityContext(repoId: string, context: string): Promise<void> {
+  await supabase
+    .from("repos")
+    .update({security_context: context})
+    .eq("id", repoId);
+}
+
+/**
+ * Returns categories that have been marked as false positives 2+ times in this
+ * repo. Used to append learned suppression rules to the security context.
+ */
+export async function getFalsePositivePatterns(
+  repoId: string,
+): Promise<{category: string; count: number}[]> {
+  const {data} = await supabase
+    .from("findings")
+    .select("category")
+    .eq("repo_id", repoId)
+    .eq("is_false_positive", true);
+
+  if (!data?.length) return [];
+
+  const counts: Record<string, number> = {};
+  for (const row of data as {category: string}[]) {
+    counts[row.category] = (counts[row.category] ?? 0) + 1;
+  }
+
+  return Object.entries(counts)
+    .filter(([, count]) => count >= 2)
+    .map(([category, count]) => ({category, count}));
+}
+
 // Atomically checks the monthly scan limit and increments the counter in one
 // operation, eliminating the TOCTOU race in the old SELECT-then-UPDATE pattern.
 // Returns true if a scan slot was claimed, false if the limit was already reached.
