@@ -6,7 +6,6 @@ import type {
   RepoRow,
   ScanRow,
   PublicStatsRow,
-  OrgSummary,
   OrgWithUsage,
 } from "./types";
 
@@ -63,13 +62,13 @@ export async function getOrCreateRepo(
 
 export async function getOrgByInstallationId(
   installationId: number,
-): Promise<OrgSummary | null> {
+): Promise<OrgWithUsage | null> {
   const {data} = await supabase
     .from("installations")
-    .select("org_id, orgs(id, plan)")
+    .select("org_id, orgs(id, plan, subscription_status, scan_count_month, scan_month, sweep_trials_used, sweep_count_month, sweep_month)")
     .eq("github_install_id", installationId)
     .single();
-  return (data?.orgs as unknown as OrgSummary) ?? null;
+  return (data?.orgs as unknown as OrgWithUsage) ?? null;
 }
 
 // ─── Scans ────────────────────────────────────────────────────────────────────
@@ -188,6 +187,9 @@ export async function updateScanStatus(
     updatePublicStats({findings: issues.length, critical}).catch((err) => {
       console.error("[stats] update failed:", err);
     });
+    markStaleFindings(scanId).catch((err) => {
+      console.error("[staleness] mark stale failed:", err);
+    });
   }
 }
 
@@ -274,7 +276,10 @@ async function updatePublicStats(params: {
   findings: number;
   critical: number;
 }): Promise<void> {
-  const existing = await getPublicStats();
+  const [existing, {count: repoCount}] = await Promise.all([
+    getPublicStats(),
+    supabase.from("repos").select("id", {count: "exact", head: true}),
+  ]);
   if (!existing) return;
 
   const {error} = await supabase
@@ -283,11 +288,43 @@ async function updatePublicStats(params: {
       total_scans: Number(existing.total_scans ?? 0) + 1,
       total_findings: Number(existing.total_findings ?? 0) + params.findings,
       critical_caught: Number(existing.critical_caught ?? 0) + params.critical,
+      total_repos: repoCount ?? existing.total_repos,
       updated_at: new Date().toISOString(),
     })
     .eq("id", existing.id);
 
   if (error) throw new Error(`updatePublicStats: ${error.message}`);
+}
+
+// Marks open findings from previous scans of the same repo+trigger as stale
+// when a newer scan completes. Called automatically after every successful scan.
+async function markStaleFindings(scanId: string): Promise<void> {
+  const {data: scan} = await supabase
+    .from("scans")
+    .select("repo_id, trigger_ref, trigger_type")
+    .eq("id", scanId)
+    .single();
+
+  if (!scan) return;
+
+  const {data: prevScans} = await supabase
+    .from("scans")
+    .select("id")
+    .eq("repo_id", (scan as {repo_id: string; trigger_ref: string; trigger_type: string}).repo_id)
+    .eq("trigger_ref", (scan as {repo_id: string; trigger_ref: string; trigger_type: string}).trigger_ref)
+    .eq("trigger_type", (scan as {repo_id: string; trigger_ref: string; trigger_type: string}).trigger_type)
+    .eq("status", "complete")
+    .neq("id", scanId);
+
+  if (!prevScans?.length) return;
+
+  await supabase
+    .from("findings")
+    .update({is_stale: true})
+    .in("scan_id", prevScans.map((s) => (s as {id: string}).id))
+    .eq("is_resolved", false)
+    .eq("is_false_positive", false)
+    .eq("is_stale", false);
 }
 
 export async function getPublicStats(): Promise<PublicStatsRow | null> {
@@ -331,19 +368,62 @@ export async function saveSweepScan(
   return data as ScanRow;
 }
 
-export async function incrementSweepTrials(orgId: string): Promise<void> {
-  const {data: org} = await supabase
+// Atomically claims the one-time sweep trial for non-pro orgs.
+// Returns true if the slot was claimed (sweep_trials_used was 0), false if already used.
+export async function tryClaimSweepTrial(orgId: string): Promise<boolean> {
+  const {data, error} = await supabase
     .from("orgs")
-    .select("sweep_trials_used")
+    .update({sweep_trials_used: 1})
     .eq("id", orgId)
-    .single();
+    .eq("sweep_trials_used", 0)
+    .select("id");
+  if (error) {
+    console.error(
+      "[db] tryClaimSweepTrial error — sweep requests will be BLOCKED for non-pro orgs until resolved:",
+      error.message,
+    );
+    return false;
+  }
+  return !!((data as Array<{id: string}> | null)?.length);
+}
 
+// Resets sweep_trials_used to 0 — called when the sweep fails before producing results.
+export async function refundSweepTrial(orgId: string): Promise<void> {
   await supabase
     .from("orgs")
-    .update({
-      sweep_trials_used: ((org as OrgRow | null)?.sweep_trials_used ?? 0) + 1,
-    })
+    .update({sweep_trials_used: 0})
     .eq("id", orgId);
+}
+
+// Atomically claims a monthly sweep slot for Starter and Pro orgs.
+// Uses the same SELECT...FOR UPDATE pattern as try_claim_scan to prevent races.
+export async function tryClaimMonthlySweep(
+  orgId: string,
+  sweepLimit: number,
+): Promise<boolean> {
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const {data, error} = await supabase.rpc("try_claim_sweep", {
+    p_org_id: orgId,
+    p_month: currentMonth,
+    p_limit: sweepLimit,
+  });
+  if (error) {
+    console.error(
+      "[db] tryClaimMonthlySweep rpc error — sweep BLOCKED (fail-closed):",
+      error.message,
+    );
+    return false;
+  }
+  return !!data;
+}
+
+// Atomically decrements sweep_count_month by 1 — called when a sweep fails before
+// producing results so the user is not charged for a broken run.
+export async function refundMonthlySweep(orgId: string): Promise<void> {
+  const {error} = await supabase.rpc("refund_sweep", {p_org_id: orgId});
+  if (error) {
+    console.error("[db] refundMonthlySweep rpc error:", error.message);
+  }
 }
 
 // ─── Billing helpers ──────────────────────────────────────────────────────────
@@ -354,7 +434,7 @@ export async function getOrgByRepoId(
   const {data, error} = await supabase
     .from("repos")
     .select(
-      "org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used, subscription_status)",
+      "org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used, sweep_count_month, sweep_month, subscription_status)",
     )
     .eq("id", repoId)
     .single();
@@ -429,24 +509,83 @@ export async function getRepoRow(
 }
 
 // Confirms that the given repo is actually owned by the given GitHub App
-// installation. Used by the sweep endpoint to prevent IDOR where a caller
-// mixes a repoId from org A with an installationId from org B.
+// installation by cross-referencing the installations table. This prevents IDOR
+// where a caller mixes a repoId from org A with an installationId from org B,
+// and also guards against a stale installation_id column on the repos row.
 export async function verifyRepoInstallation(
   repoId: string,
   installationId: number,
 ): Promise<boolean> {
-  const {data} = await supabase
+  // Primary check: the repo's recorded installation_id must match
+  const {data: repoData} = await supabase
     .from("repos")
-    .select("id")
+    .select("id, org_id")
     .eq("id", repoId)
     .eq("installation_id", installationId)
     .single();
-  return !!data;
+
+  if (!repoData) return false;
+
+  // Secondary check: cross-reference through the installations table to confirm
+  // the installation actually belongs to the same org as the repo, guarding
+  // against a stale installation_id in the repos row.
+  const {data: installData} = await supabase
+    .from("installations")
+    .select("org_id")
+    .eq("github_install_id", installationId)
+    .single();
+
+  if (!installData?.org_id) return false;
+  return installData.org_id === (repoData as {id: string; org_id: string | null}).org_id;
+}
+
+// ─── Repo security context ────────────────────────────────────────────────────
+
+/** Returns the stored per-repo security context, or null if not yet discovered. */
+export async function getRepoSecurityContext(repoId: string): Promise<string | null> {
+  const {data} = await supabase
+    .from("repos")
+    .select("security_context")
+    .eq("id", repoId)
+    .single();
+  return (data as {security_context: string | null} | null)?.security_context ?? null;
+}
+
+/** Persists the per-repo security context (discovered patterns + learned false-positive rules). */
+export async function saveRepoSecurityContext(repoId: string, context: string): Promise<void> {
+  await supabase
+    .from("repos")
+    .update({security_context: context})
+    .eq("id", repoId);
+}
+
+/**
+ * Returns categories that have been marked as false positives 2+ times in this
+ * repo. Used to append learned suppression rules to the security context.
+ */
+export async function getFalsePositivePatterns(
+  repoId: string,
+): Promise<{category: string; count: number}[]> {
+  const {data} = await supabase
+    .from("findings")
+    .select("category")
+    .eq("repo_id", repoId)
+    .eq("is_false_positive", true);
+
+  if (!data?.length) return [];
+
+  const counts: Record<string, number> = {};
+  for (const row of data as {category: string}[]) {
+    counts[row.category] = (counts[row.category] ?? 0) + 1;
+  }
+
+  return Object.entries(counts)
+    .filter(([, count]) => count >= 2)
+    .map(([category, count]) => ({category, count}));
 }
 
 // Atomically checks the monthly scan limit and increments the counter in one
 // operation, eliminating the TOCTOU race in the old SELECT-then-UPDATE pattern.
-
 // Returns true if a scan slot was claimed, false if the limit was already reached.
 export async function tryClaimScan(
   orgId: string,
@@ -459,10 +598,13 @@ export async function tryClaimScan(
     p_limit: scanLimit,
   });
   if (error) {
-    console.error("[db] tryClaimScan rpc error:", error.message);
-    // Fall back to permitting the scan rather than silently blocking all scans
-    // if the function hasn't been created yet.
-    return true;
+    // Fail closed: a broken quota mechanism must block scans rather than grant
+    // unlimited free access. Operators must ensure try_claim_scan exists in Supabase.
+    console.error(
+      "[db] tryClaimScan rpc error — quota enforcement BLOCKED (fail-closed). Ensure the try_claim_scan function exists in your Supabase project:",
+      error.message,
+    );
+    return false;
   }
   return !!data;
 }

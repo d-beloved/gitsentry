@@ -1,10 +1,12 @@
 import type Bull from "bull";
-import { analyzeCode } from "../ai";
+import { analyzeCode, discoverSecurityContext } from "../ai";
 import {
   postPRReview,
   postCommitComment,
   postCheckRun,
   postUpgradeComment,
+  setupBranchProtection,
+  fetchRepoAuthFiles,
 } from "../github";
 import {
   saveFindings,
@@ -13,11 +15,13 @@ import {
   tryClaimScan,
   getPreviousPRCommentId,
   updateScanCommentId,
+  getRepoSecurityContext,
+  saveRepoSecurityContext,
 } from "../../db/queries";
 import { notifyIfNeeded } from "../notifier";
 import type { ScanJobData } from "../../../../../packages/scanner-contract/types";
 
-const SCAN_LIMITS: Record<string, number> = { free: 10, starter: 50 };
+const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50, pro: 500};
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -40,6 +44,7 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
     commitSha,
     branch,
     triggerType,
+    quotaAlreadyClaimed,
   } = data;
   const startedAt = Date.now();
 
@@ -50,21 +55,46 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[org?.plan ?? "free"] ?? SCAN_LIMITS.free;
 
-    if (org && !isPro) {
+    // Claim a scan slot for all plans (including Pro, which is capped at 500/month).
+    // Skip when the caller already claimed atomically (rescan endpoint, issue_comment
+    // webhook) to prevent double-counting.
+    if (org && !quotaAlreadyClaimed) {
       const claimed = await tryClaimScan(org.id, scanLimit);
       if (!claimed) {
         console.log(
           `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
         );
         await updateScanStatus(scanId, [], 0, "failed");
-        postUpgradeComment(repoFullName, { prNumber, commitSha }, installationId).catch(
+        postUpgradeComment(repoFullName, {prNumber, commitSha}, installationId).catch(
           (err: Error) => console.error("[worker] upgrade comment failed:", err.message),
         );
         return;
       }
     }
 
-    const { issues, summary } = await analyzeCode(diff, context);
+    // Fetch or discover the per-repo security context so the AI understands
+    // this codebase's auth and rate-limit patterns before scanning.
+    let repoSecurityContext = await getRepoSecurityContext(repoId);
+    if (!repoSecurityContext) {
+      try {
+        const authFiles = await fetchRepoAuthFiles(repoFullName, branch, installationId);
+        if (authFiles.length > 0) {
+          repoSecurityContext = await discoverSecurityContext(authFiles, repoFullName);
+          if (repoSecurityContext) {
+            saveRepoSecurityContext(repoId, repoSecurityContext).catch((err: Error) =>
+              console.error("[worker] saveRepoSecurityContext failed:", err.message),
+            );
+          }
+        }
+      } catch (err) {
+        console.warn("[worker] security context discovery failed — scanning without it:", (err as Error).message);
+      }
+    }
+
+    const { issues, summary } = await analyzeCode(diff, {
+      ...context,
+      repoSecurityContext,
+    });
 
     let findings: Awaited<ReturnType<typeof saveFindings>> = [];
     if (issues.length > 0) {
@@ -97,6 +127,13 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
 
     // Check Run — Pro plan only
     if (prNumber != null && commitSha && isPro) {
+      // Lazily ensure branch protection is set up for repos that existed before
+      // the auto-setup feature was deployed (installationRepositories only covers
+      // repos added after deployment).
+      setupBranchProtection(repoFullName, branch ?? "main", installationId).catch(
+        (err: Error) =>
+          console.error("[worker] lazy branch protection setup failed:", err.message),
+      );
       postCheckRun(repoFullName, commitSha, findings, installationId).catch((err: Error) =>
         console.error("[worker] check run failed:", err.message),
       );

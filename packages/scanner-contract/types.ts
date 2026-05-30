@@ -98,6 +98,8 @@ export interface ScanContext {
   branch: string;
   triggerType: TriggerType;
   author: string | null;
+  /** Per-repo security context (auth patterns, ownership helpers, learned false-positive rules). Injected into the AI prompt when present. */
+  repoSecurityContext?: string | null;
 }
 
 export interface ScanJobData {
@@ -111,4 +113,7 @@ export interface ScanJobData {
   commitSha?: string | null;
   branch: string;
   triggerType: string;
+  // Set to true when the caller already atomically claimed a quota slot before
+  // dispatching. The worker skips its own tryClaimScan to prevent double-counting.
+  quotaAlreadyClaimed?: boolean;
 }

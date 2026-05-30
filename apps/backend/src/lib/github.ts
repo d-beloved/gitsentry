@@ -335,6 +335,60 @@ export async function setupBranchProtection(
   }
 }
 
+// ─── Security context discovery ───────────────────────────────────────────────
+
+const AUTH_FILE_CANDIDATES = [
+  ".gitsentry/context.md",
+  "middleware.ts",
+  "middleware.js",
+  "src/middleware.ts",
+  "lib/auth.ts",
+  "lib/auth.js",
+  "lib/auth/index.ts",
+  "src/lib/auth.ts",
+  "utils/auth.ts",
+  "src/utils/auth.ts",
+  "app/lib/auth.ts",
+  "app/middleware.ts",
+];
+
+const MAX_FILE_BYTES = 4_000;
+
+/**
+ * Fetches key authentication/middleware files from a repo via the GitHub API.
+ * Used to seed the per-repo security context on first scan.
+ * Silently skips files that don't exist — most repos only have a subset.
+ */
+export async function fetchRepoAuthFiles(
+  repoFullName: string,
+  branch: string,
+  installationId: number,
+): Promise<{path: string; content: string}[]> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  const results = await Promise.allSettled(
+    AUTH_FILE_CANDIDATES.map(async (path) => {
+      const {data} = await octokit.request(
+        "GET /repos/{owner}/{repo}/contents/{path}",
+        {owner, repo, path, ref: branch},
+      );
+      if (data && "content" in data && typeof data.content === "string") {
+        const content = Buffer.from(data.content, "base64").toString("utf8");
+        return {path, content: content.slice(0, MAX_FILE_BYTES)};
+      }
+      return null;
+    }),
+  );
+
+  return results
+    .filter(
+      (r): r is PromiseFulfilledResult<{path: string; content: string}> =>
+        r.status === "fulfilled" && r.value !== null,
+    )
+    .map((r) => r.value);
+}
+
 /**
  * Removes the "Gitsentry Security Scan" required status check from the repo's
  * default branch. Swallows 404s — if branch protection doesn't exist (e.g.

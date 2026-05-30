@@ -23,6 +23,7 @@ export interface RepoRow {
   installation_id: number | null;
   is_private: boolean;
   is_active: boolean;
+  security_context: string | null;
 }
 
 export interface ScanRow {
@@ -57,6 +58,7 @@ export interface PublicStatsRow {
   id: string;
   total_scans: number;
   total_findings: number;
+  total_repos: number;
   critical_caught: number;
   updated_at: string;
 }
@@ -65,12 +67,14 @@ export interface PublicStatsRow {
 export interface OrgSummary {
   id: string;
   plan: OrgPlan;
+  subscription_status: string | null;
 }
 
-/** Extended org shape used for scan-limit gating in the worker */
+/** Extended org shape used for scan-limit gating in the worker and sweep enforcement */
 export interface OrgWithUsage extends OrgSummary {
   scan_count_month: number | null;
   scan_month: string | null;
   sweep_trials_used: number;
-  subscription_status: string | null;
+  sweep_count_month: number | null;
+  sweep_month: string | null;
 }
