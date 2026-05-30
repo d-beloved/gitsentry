@@ -129,9 +129,9 @@ REDIS_URL=                        # optional — redis://localhost:6379
 INTERNAL_API_KEY=                 # shared secret with dashboard; generate: openssl rand -hex 32
 PRODUCT_URL=                      # e.g. https://gitsentry.dev
 
-PORT=3000
+PORT=3200
 NODE_ENV=development
-ALLOWED_ORIGINS=http://localhost:3001   # comma-separated in prod
+ALLOWED_ORIGINS=http://localhost:3201   # comma-separated in prod
 
 RESEND_API_KEY=                   # optional — Resend email alerts
 FROM_EMAIL=                       # optional — e.g. Gitsentry.dev <alerts@gitsentry.dev>
@@ -151,7 +151,7 @@ yarn dev
 ### 5. Expose locally for testing
 
 ```bash
-npx smee -u https://smee.io/your-channel -t http://localhost:3000/webhook
+npx smee -u https://smee.io/your-channel -t http://localhost:3200/webhook
 ```
 
 ---

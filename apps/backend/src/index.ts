@@ -14,7 +14,7 @@ app.set("trust proxy", 1);
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
   ? process.env.ALLOWED_ORIGINS.split(",")
-  : ["http://localhost:3001"];
+  : ["http://localhost:3201"];
 
 app.use(cors({origin: ALLOWED_ORIGINS, credentials: true}));
 
@@ -54,7 +54,7 @@ app.use((_req: Request, res: Response) =>
   res.status(404).json({error: "Not found"}),
 );
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3200;
 app.listen(PORT, () => {
   console.log(`Gitsentry.dev backend listening on port ${PORT}`);
   console.log(`Webhook endpoint: POST http://localhost:${PORT}/webhook`);
