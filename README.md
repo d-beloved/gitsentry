@@ -4,7 +4,7 @@
 
 **[MIT License](LICENSE)** · **[Install on GitHub →](https://github.com/apps/gitsentry-dev)**
 
-![Gitsentry.dev in action](assets/demo.gif)
+![Gitsentry.dev in action](https://github.com/user-attachments/assets/e70f0423-c1a7-4624-87c3-ffe4d3966fea)
 
 ---
 
