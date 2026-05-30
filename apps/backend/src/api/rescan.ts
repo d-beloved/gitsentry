@@ -12,7 +12,7 @@ import {dispatchScan} from "../lib/queue";
 
 const router = express.Router();
 
-const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50};
+const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50, pro: 500};
 
 function verifyInternalKey(req: Request, res: Response, next: NextFunction): void {
   const key = process.env.INTERNAL_API_KEY;
@@ -66,25 +66,24 @@ router.post(
       (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
 
-    // Atomically claim a scan slot before doing any GitHub API work.
+    // Atomically claim a scan slot before doing any GitHub API work (all plans,
+    // including Pro which is capped at 500/month).
     // quotaAlreadyClaimed is set on the job so the worker skips its own claim.
-    if (!isPro) {
-      const claimed = org ? await tryClaimScan(org.id, scanLimit) : false;
-      if (!claimed) {
-        res.status(402).json({
-          error: `Monthly scan limit reached on the ${plan} plan.`,
-          remaining: 0,
-          upgradeUrl: `${process.env.PRODUCT_URL}/dashboard/billing`,
-        });
-        return;
-      }
+    const claimed = org ? await tryClaimScan(org.id, scanLimit) : false;
+    if (!claimed) {
+      res.status(402).json({
+        error: `Monthly scan limit reached on the ${plan} plan (${scanLimit}/month).`,
+        remaining: 0,
+        upgradeUrl: `${process.env.PRODUCT_URL}/dashboard/billing`,
+      });
+      return;
     }
 
-    // Advisory remaining count derived from the snapshot fetched above (one slot already claimed)
+    // Advisory remaining count (one slot already claimed above)
     const currentMonth = new Date().toISOString().slice(0, 7);
     const scansUsedBefore =
       org?.scan_month === currentMonth ? (org?.scan_count_month ?? 0) : 0;
-    const remaining = isPro ? null : Math.max(0, scanLimit - scansUsedBefore - 1);
+    const remaining = Math.max(0, scanLimit - scansUsedBefore - 1);
 
     const octokit = await getInstallationOctokit(installationId);
     const [owner, repoName] = repoRow.full_name.split("/");

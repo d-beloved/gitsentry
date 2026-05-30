@@ -65,7 +65,7 @@ export async function getOrgByInstallationId(
 ): Promise<OrgWithUsage | null> {
   const {data} = await supabase
     .from("installations")
-    .select("org_id, orgs(id, plan, subscription_status, scan_count_month, scan_month, sweep_trials_used)")
+    .select("org_id, orgs(id, plan, subscription_status, scan_count_month, scan_month, sweep_trials_used, sweep_count_month, sweep_month)")
     .eq("github_install_id", installationId)
     .single();
   return (data?.orgs as unknown as OrgWithUsage) ?? null;
@@ -395,6 +395,37 @@ export async function refundSweepTrial(orgId: string): Promise<void> {
     .eq("id", orgId);
 }
 
+// Atomically claims a monthly sweep slot for Starter and Pro orgs.
+// Uses the same SELECT...FOR UPDATE pattern as try_claim_scan to prevent races.
+export async function tryClaimMonthlySweep(
+  orgId: string,
+  sweepLimit: number,
+): Promise<boolean> {
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const {data, error} = await supabase.rpc("try_claim_sweep", {
+    p_org_id: orgId,
+    p_month: currentMonth,
+    p_limit: sweepLimit,
+  });
+  if (error) {
+    console.error(
+      "[db] tryClaimMonthlySweep rpc error — sweep BLOCKED (fail-closed):",
+      error.message,
+    );
+    return false;
+  }
+  return !!data;
+}
+
+// Atomically decrements sweep_count_month by 1 — called when a sweep fails before
+// producing results so the user is not charged for a broken run.
+export async function refundMonthlySweep(orgId: string): Promise<void> {
+  const {error} = await supabase.rpc("refund_sweep", {p_org_id: orgId});
+  if (error) {
+    console.error("[db] refundMonthlySweep rpc error:", error.message);
+  }
+}
+
 // ─── Billing helpers ──────────────────────────────────────────────────────────
 
 export async function getOrgByRepoId(
@@ -403,7 +434,7 @@ export async function getOrgByRepoId(
   const {data, error} = await supabase
     .from("repos")
     .select(
-      "org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used, subscription_status)",
+      "org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used, sweep_count_month, sweep_month, subscription_status)",
     )
     .eq("id", repoId)
     .single();

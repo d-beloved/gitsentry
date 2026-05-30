@@ -21,7 +21,7 @@ import {
 import { notifyIfNeeded } from "../notifier";
 import type { ScanJobData } from "../../../../../packages/scanner-contract/types";
 
-const SCAN_LIMITS: Record<string, number> = { free: 10, starter: 50 };
+const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50, pro: 500};
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
@@ -55,17 +55,17 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[org?.plan ?? "free"] ?? SCAN_LIMITS.free;
 
-    // Skip the quota claim when the caller already claimed it atomically (rescan
-    // endpoint, issue_comment webhook). Only claim here for push/PR webhook scans
-    // where no prior claim was made.
-    if (org && !isPro && !quotaAlreadyClaimed) {
+    // Claim a scan slot for all plans (including Pro, which is capped at 500/month).
+    // Skip when the caller already claimed atomically (rescan endpoint, issue_comment
+    // webhook) to prevent double-counting.
+    if (org && !quotaAlreadyClaimed) {
       const claimed = await tryClaimScan(org.id, scanLimit);
       if (!claimed) {
         console.log(
           `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
         );
         await updateScanStatus(scanId, [], 0, "failed");
-        postUpgradeComment(repoFullName, { prNumber, commitSha }, installationId).catch(
+        postUpgradeComment(repoFullName, {prNumber, commitSha}, installationId).catch(
           (err: Error) => console.error("[worker] upgrade comment failed:", err.message),
         );
         return;

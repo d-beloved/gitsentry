@@ -7,7 +7,7 @@ import {
 import {parseDiffStats, truncateDiff} from "../lib/differ";
 import {dispatchScan} from "../lib/queue";
 
-const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50};
+const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50, pro: 500};
 
 export async function handleIssueComment(
   payload: Record<string, unknown>,
@@ -56,45 +56,40 @@ export async function handleIssueComment(
     plan === "pro" &&
     (org?.subscription_status === "active" || org?.subscription_status == null);
 
-  // Quota check for non-pro plans
-  if (!isPro) {
-    const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
-    const claimed = org ? await tryClaimScan(org.id, scanLimit) : false;
+  // Quota check — all plans including Pro (capped at 500/month)
+  const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
+  const claimed = org ? await tryClaimScan(org.id, scanLimit) : false;
 
-    if (!claimed) {
-      await octokit.request(
-        "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
-        {
-          owner,
-          repo: repoName,
-          issue_number: prNumber,
-          body: [
-            `> /gitsentry rescan`,
-            "",
-            `@${sender} — re-scan not started. You've reached your monthly scan limit on the **${plan}** plan.`,
-            "",
-            `[Upgrade to Pro](${process.env.PRODUCT_URL}/dashboard/billing) for unlimited scans.`,
-            "",
-            `_Powered by [Gitsentry.dev](${process.env.PRODUCT_URL})_`,
-          ].join("\n"),
-        },
-      );
-      return;
-    }
+  if (!claimed) {
+    await octokit.request(
+      "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+      {
+        owner,
+        repo: repoName,
+        issue_number: prNumber,
+        body: [
+          `> /gitsentry rescan`,
+          "",
+          `@${sender} — re-scan not started. You've reached your monthly scan limit (${scanLimit}/month) on the **${plan}** plan.`,
+          "",
+          plan === "pro"
+            ? `Contact support if you need a higher limit.`
+            : `[Upgrade to Pro](${process.env.PRODUCT_URL}/dashboard/billing) for 500 scans/month.`,
+          "",
+          `_Powered by [Gitsentry.dev](${process.env.PRODUCT_URL})_`,
+        ].join("\n"),
+      },
+    );
+    return;
   }
 
   // Post acknowledgment immediately so the user knows something is happening.
-  // org is OrgWithUsage so scan_count_month / scan_month are available directly.
   const currentMonth = new Date().toISOString().slice(0, 7);
   const scansUsed =
     org?.scan_month === currentMonth ? (org?.scan_count_month ?? 0) : 0;
-  const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
-  const remaining = isPro ? null : Math.max(0, scanLimit - scansUsed - 1);
+  const remaining = Math.max(0, scanLimit - scansUsed - 1);
 
-  const quotaLine =
-    remaining !== null
-      ? `_This scan uses 1 of your ${remaining} remaining scans this month._`
-      : "";
+  const quotaLine = `_This scan uses 1 of your ${remaining} remaining scans this month._`;
 
   await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",

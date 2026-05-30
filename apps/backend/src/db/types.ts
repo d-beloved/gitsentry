@@ -75,4 +75,6 @@ export interface OrgWithUsage extends OrgSummary {
   scan_count_month: number | null;
   scan_month: string | null;
   sweep_trials_used: number;
+  sweep_count_month: number | null;
+  sweep_month: string | null;
 }

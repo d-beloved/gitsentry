@@ -134,6 +134,59 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS is_stale BOOLEAN DEFAULT FALSE;
 -- so the scanner understands this repo's auth and rate-limit patterns.
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS security_context TEXT;
 
+-- Phase 6: monthly sweep quota tracking on orgs — mirrors scan_count_month /
+-- scan_month but for security sweeps. Used to enforce per-plan monthly limits:
+-- Starter = 1/month, Pro = 10/month. Free plan keeps using sweep_trials_used
+-- (one-time lifetime trial).
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS sweep_count_month INT  DEFAULT 0;
+ALTER TABLE orgs ADD COLUMN IF NOT EXISTS sweep_month       TEXT DEFAULT '';
+
+-- Atomically claims a monthly sweep slot for an org.
+-- Returns TRUE if a slot was granted, FALSE if the monthly limit is already reached.
+CREATE OR REPLACE FUNCTION try_claim_sweep(
+  p_org_id  UUID,
+  p_month   TEXT,
+  p_limit   INT
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_count INT;
+  v_month TEXT;
+BEGIN
+  SELECT sweep_count_month, sweep_month
+    INTO v_count, v_month
+    FROM orgs
+   WHERE id = p_org_id
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN FALSE;
+  END IF;
+
+  -- New billing month: reset counter and grant the slot
+  IF v_month IS DISTINCT FROM p_month THEN
+    UPDATE orgs
+       SET sweep_count_month = 1,
+           sweep_month       = p_month
+     WHERE id = p_org_id;
+    RETURN TRUE;
+  END IF;
+
+  IF v_count >= p_limit THEN
+    RETURN FALSE;
+  END IF;
+
+  UPDATE orgs
+     SET sweep_count_month = v_count + 1
+   WHERE id = p_org_id;
+
+  RETURN TRUE;
+END;
+$$;
+
 -- Phase 4: store installation_id on repos so sweep can authenticate GitHub calls
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS installation_id BIGINT;
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS default_branch   TEXT DEFAULT 'main';
@@ -217,5 +270,34 @@ BEGIN
    WHERE id = p_org_id;
 
   RETURN TRUE;
+END;
+$$;
+
+-- Atomically refunds one monthly sweep slot (e.g. when a sweep errors before
+-- producing results). Uses FOR UPDATE to prevent the same lost-update race as
+-- try_claim_sweep guards against on the claim side.
+CREATE OR REPLACE FUNCTION refund_sweep(p_org_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_count INT;
+BEGIN
+  SELECT sweep_count_month
+    INTO v_count
+    FROM orgs
+   WHERE id = p_org_id
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN;
+  END IF;
+
+  IF v_count > 0 THEN
+    UPDATE orgs
+       SET sweep_count_month = v_count - 1
+     WHERE id = p_org_id;
+  END IF;
 END;
 $$;
