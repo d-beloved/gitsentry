@@ -101,7 +101,7 @@ router.post(
     } else {
       // Starter (1/month) and Pro (10/month) use the monthly quota
       const sweepLimit = SWEEP_LIMITS[plan] ?? 1;
-      claimedSweep = await tryClaimMonthlySweep(org.id, sweepLimit);
+      claimedSweep = await tryClaimMonthlySweep(org.id, sweepLimit, plan, org.sweep_month ?? null);
       usedMonthlyQuota = true;
       if (!claimedSweep) {
         const limitLabel = sweepLimit === 1 ? "1 sweep" : `${sweepLimit} sweeps`;
@@ -146,6 +146,9 @@ router.post(
         attack_chains,
         recommendations,
         scan_mode,
+        tokens_in = 0,
+        tokens_out = 0,
+        model_name,
       } = result;
 
       let findings: Awaited<ReturnType<typeof saveFindings>> = [];
@@ -153,7 +156,11 @@ router.post(
         findings = await saveFindings(scan.id, issues);
       }
 
-      await updateScanStatus(scan.id, issues, Date.now() - startedAt);
+      await updateScanStatus(scan.id, issues, Date.now() - startedAt, "complete", {
+        tokensIn: tokens_in,
+        tokensOut: tokens_out,
+        modelName: model_name,
+      });
 
       res.json({
         scanId: scan.id,

@@ -165,6 +165,7 @@ export async function updateScanStatus(
   issues: Array<{severity: string}>,
   durationMs: number = 0,
   status: "complete" | "failed" = "complete",
+  tokens?: { tokensIn: number; tokensOut: number; modelName?: string },
 ): Promise<void> {
   const {critical, high, medium, low} = countBySeverity(issues);
 
@@ -178,6 +179,7 @@ export async function updateScanStatus(
       medium_count: medium,
       low_count: low,
       duration_ms: durationMs,
+      ...(tokens ? { tokens_in: tokens.tokensIn, tokens_out: tokens.tokensOut, ai_model: tokens.modelName ?? null } : {}),
     })
     .eq("id", scanId);
 
@@ -276,11 +278,13 @@ async function updatePublicStats(params: {
   findings: number;
   critical: number;
 }): Promise<void> {
-  const [existing, {count: repoCount}] = await Promise.all([
+  const [existing, {data: scannedRepoRows}] = await Promise.all([
     getPublicStats(),
-    supabase.from("repos").select("id", {count: "exact", head: true}),
+    supabase.from("scans").select("repo_id").eq("status", "complete"),
   ]);
   if (!existing) return;
+
+  const scannedRepoCount = new Set(scannedRepoRows?.map((s: any) => s.repo_id) ?? []).size;
 
   const {error} = await supabase
     .from("public_stats")
@@ -288,7 +292,7 @@ async function updatePublicStats(params: {
       total_scans: Number(existing.total_scans ?? 0) + 1,
       total_findings: Number(existing.total_findings ?? 0) + params.findings,
       critical_caught: Number(existing.critical_caught ?? 0) + params.critical,
-      total_repos: repoCount ?? existing.total_repos,
+      total_repos: scannedRepoCount || existing.total_repos,
       updated_at: new Date().toISOString(),
     })
     .eq("id", existing.id);
@@ -397,14 +401,21 @@ export async function refundSweepTrial(orgId: string): Promise<void> {
 
 // Atomically claims a monthly sweep slot for Starter and Pro orgs.
 // Uses the same SELECT...FOR UPDATE pattern as try_claim_scan to prevent races.
+// For paid plans, pass the org's stored sweep_month so the RPC never resets on a
+// calendar boundary — only Paddle's transaction.completed webhook resets the counter.
+// For free users this path is never reached (they use tryClaimSweepTrial instead).
 export async function tryClaimMonthlySweep(
   orgId: string,
   sweepLimit: number,
+  plan: string = "free",
+  storedSweepMonth: string | null = null,
 ): Promise<boolean> {
-  const currentMonth = new Date().toISOString().slice(0, 7);
+  // Free: reset on calendar month. Paid: pass stored value so only Paddle resets.
+  const effectiveMonth =
+    plan === "free" ? new Date().toISOString().slice(0, 7) : storedSweepMonth;
   const {data, error} = await supabase.rpc("try_claim_sweep", {
     p_org_id: orgId,
-    p_month: currentMonth,
+    p_month: effectiveMonth,
     p_limit: sweepLimit,
   });
   if (error) {
@@ -587,14 +598,20 @@ export async function getFalsePositivePatterns(
 // Atomically checks the monthly scan limit and increments the counter in one
 // operation, eliminating the TOCTOU race in the old SELECT-then-UPDATE pattern.
 // Returns true if a scan slot was claimed, false if the limit was already reached.
+// For paid plans, pass the org's stored scan_month so the RPC never resets on a
+// calendar boundary — only Paddle's transaction.completed webhook resets the counter.
 export async function tryClaimScan(
   orgId: string,
   scanLimit: number,
+  plan: string = "free",
+  storedScanMonth: string | null = null,
 ): Promise<boolean> {
-  const currentMonth = new Date().toISOString().slice(0, 7);
+  // Free: reset on calendar month. Paid: pass stored value so only Paddle resets.
+  const effectiveMonth =
+    plan === "free" ? new Date().toISOString().slice(0, 7) : storedScanMonth;
   const {data, error} = await supabase.rpc("try_claim_scan", {
     p_org_id: orgId,
-    p_month: currentMonth,
+    p_month: effectiveMonth,
     p_limit: scanLimit,
   });
   if (error) {

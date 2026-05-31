@@ -131,8 +131,9 @@ export async function analyzeCode(
   options: { mode?: "diff_scan" | "security_sweep" } = {},
 ): Promise<AIAnalysisResult> {
   const mode = options.mode === "security_sweep" ? "security_sweep" : "diff_scan";
+  const modelName = mode === "security_sweep" ? SWEEP_MODEL : SCAN_MODEL;
   const model = genAI.getGenerativeModel({
-    model: mode === "security_sweep" ? SWEEP_MODEL : SCAN_MODEL,
+    model: modelName,
     generationConfig: {responseMimeType: "application/json"},
   });
   const input = mode === "diff_scan" ? extractWithContext(diff) : diff;
@@ -145,6 +146,9 @@ export async function analyzeCode(
 
   const result = await Promise.race([model.generateContent(prompt), timeoutPromise]);
   const text = result.response.text();
+  const usage   = result.response.usageMetadata;
+  const tokensIn  = usage?.promptTokenCount     ?? 0;
+  const tokensOut = usage?.candidatesTokenCount ?? 0;
 
   try {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -155,13 +159,16 @@ export async function analyzeCode(
       issues: Array.isArray(parsed.issues) ? parsed.issues : [],
       summary: parsed.summary || "Analysis complete.",
       scan_mode: mode,
+      tokens_in: tokensIn,
+      tokens_out: tokensOut,
+      model_name: modelName,
       threat_model: parsed.threat_model ?? {},
       attack_chains: Array.isArray(parsed.attack_chains) ? parsed.attack_chains : [],
       recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
     };
   } catch (e) {
     console.error("[ai] Response parse error:", e);
-    return { issues: [], summary: "Analysis failed — could not parse response." };
+    return { issues: [], summary: "Analysis failed — could not parse response.", tokens_in: tokensIn, tokens_out: tokensOut, model_name: modelName };
   }
 }
 

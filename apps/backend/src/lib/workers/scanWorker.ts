@@ -59,7 +59,7 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
     // Skip when the caller already claimed atomically (rescan endpoint, issue_comment
     // webhook) to prevent double-counting.
     if (org && !quotaAlreadyClaimed) {
-      const claimed = await tryClaimScan(org.id, scanLimit);
+      const claimed = await tryClaimScan(org.id, scanLimit, org.plan ?? "free", org.scan_month ?? null);
       if (!claimed) {
         console.log(
           `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
@@ -91,7 +91,7 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       }
     }
 
-    const { issues, summary } = await analyzeCode(diff, {
+    const { issues, summary, tokens_in, tokens_out, model_name } = await analyzeCode(diff, {
       ...context,
       repoSecurityContext,
     });
@@ -139,7 +139,11 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       );
     }
 
-    await updateScanStatus(scanId, issues, Date.now() - startedAt);
+    await updateScanStatus(scanId, issues, Date.now() - startedAt, "complete", {
+      tokensIn: tokens_in ?? 0,
+      tokensOut: tokens_out ?? 0,
+      modelName: model_name,
+    });
   } catch (err) {
     console.error(`[worker] Scan ${scanId} failed:`, (err as Error).message);
     await updateScanStatus(scanId, [], 0, "failed").catch(() => {});
