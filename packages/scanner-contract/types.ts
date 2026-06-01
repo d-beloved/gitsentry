@@ -77,6 +77,9 @@ export interface AIAnalysisResult {
   issues: Finding[];
   summary: string;
   scan_mode?: ScanMode;
+  tokens_in?: number;
+  tokens_out?: number;
+  model_name?: string;
   threat_model?: {
     attacker_profiles?: string[];
     entry_points?: string[];

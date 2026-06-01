@@ -58,7 +58,7 @@ export async function handleIssueComment(
 
   // Quota check — all plans including Pro (capped at 500/month)
   const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
-  const claimed = org ? await tryClaimScan(org.id, scanLimit) : false;
+  const claimed = org ? await tryClaimScan(org.id, scanLimit, plan, org.scan_month ?? null) : false;
 
   if (!claimed) {
     await octokit.request(
@@ -84,9 +84,11 @@ export async function handleIssueComment(
   }
 
   // Post acknowledgment immediately so the user knows something is happening.
-  const currentMonth = new Date().toISOString().slice(0, 7);
+  const currentCalMonth = new Date().toISOString().slice(0, 7);
   const scansUsed =
-    org?.scan_month === currentMonth ? (org?.scan_count_month ?? 0) : 0;
+    plan === "free"
+      ? (org?.scan_month === currentCalMonth ? (org?.scan_count_month ?? 0) : 0)
+      : (org?.scan_count_month ?? 0);
   const remaining = Math.max(0, scanLimit - scansUsed - 1);
 
   const quotaLine = `_This scan uses 1 of your ${remaining} remaining scans this month._`;

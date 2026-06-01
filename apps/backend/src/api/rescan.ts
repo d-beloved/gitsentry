@@ -69,7 +69,7 @@ router.post(
     // Atomically claim a scan slot before doing any GitHub API work (all plans,
     // including Pro which is capped at 500/month).
     // quotaAlreadyClaimed is set on the job so the worker skips its own claim.
-    const claimed = org ? await tryClaimScan(org.id, scanLimit) : false;
+    const claimed = org ? await tryClaimScan(org.id, scanLimit, plan, org.scan_month ?? null) : false;
     if (!claimed) {
       res.status(402).json({
         error: `Monthly scan limit reached on the ${plan} plan (${scanLimit}/month).`,
@@ -79,10 +79,15 @@ router.post(
       return;
     }
 
-    // Advisory remaining count (one slot already claimed above)
-    const currentMonth = new Date().toISOString().slice(0, 7);
+    // Advisory remaining count (one slot already claimed above).
+    // For paid plans, scan_month is Paddle-controlled so compare directly against
+    // the stored count. For free, the RPC may have just reset on a month boundary
+    // (stale org.scan_month won't match currentMonth), so treat that as 0 used.
+    const currentCalMonth = new Date().toISOString().slice(0, 7);
     const scansUsedBefore =
-      org?.scan_month === currentMonth ? (org?.scan_count_month ?? 0) : 0;
+      plan === "free"
+        ? (org?.scan_month === currentCalMonth ? (org?.scan_count_month ?? 0) : 0)
+        : (org?.scan_count_month ?? 0);
     const remaining = Math.max(0, scanLimit - scansUsedBefore - 1);
 
     const octokit = await getInstallationOctokit(installationId);

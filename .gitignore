@@ -36,5 +36,6 @@ Thumbs.db
 *.swp
 
 apps/web/
+apps/cli/
 gitsentry-prd.md
 apps/product-video/
