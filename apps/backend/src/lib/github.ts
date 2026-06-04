@@ -134,14 +134,6 @@ export async function postCommitComment(
 const PRODUCT_NAME = "Gitsentry.dev";
 const PRODUCT_URL = process.env.PRODUCT_URL;
 
-function findingReportUrl(findingId: string): string {
-  return `${PRODUCT_URL}/dashboard/findings/${findingId}`;
-}
-
-function findingDismissUrl(findingId: string): string {
-  return `${PRODUCT_URL}/dashboard/findings/${findingId}`;
-}
-
 function formatReviewBody(
   issues: Finding[],
   summary: string,
@@ -176,10 +168,6 @@ function formatReviewBody(
 
     body += `**Issue:** ${issue.description}\n\n`;
     body += `**Fix:** ${issue.fix_suggestion}\n\n`;
-
-    if (issue.id) {
-      body += `[View & manage finding](${findingReportUrl(issue.id)})\n\n`;
-    }
 
     body += `---\n\n`;
   }
