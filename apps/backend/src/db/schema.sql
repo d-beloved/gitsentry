@@ -189,6 +189,10 @@ $$;
 
 -- Phase 4: store installation_id on repos so sweep can authenticate GitHub calls
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS installation_id BIGINT;
+
+-- Phase 7: distinguish "removed from installation" from "never scanned yet"
+-- Dashboard queries filter removed_at IS NULL to hide deselected repos.
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ;
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS default_branch   TEXT DEFAULT 'main';
 
 -- Phase 4: Paddle billing + usage tracking on orgs

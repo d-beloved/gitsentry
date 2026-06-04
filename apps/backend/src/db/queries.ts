@@ -292,7 +292,7 @@ async function updatePublicStats(params: {
       total_scans: Number(existing.total_scans ?? 0) + 1,
       total_findings: Number(existing.total_findings ?? 0) + params.findings,
       critical_caught: Number(existing.critical_caught ?? 0) + params.critical,
-      total_repos: scannedRepoCount || existing.total_repos,
+      total_repos: Math.max(scannedRepoCount, Number(existing.total_repos ?? 0)),
       updated_at: new Date().toISOString(),
     })
     .eq("id", existing.id);
@@ -353,6 +353,9 @@ export async function saveSweepScan(
   repoId: string,
   branch: string,
 ): Promise<ScanRow> {
+  // Mark active — a successful sweep confirms the installation is working
+  await supabase.from("repos").update({is_active: true}).eq("id", repoId);
+
   const {data, error} = await supabase
     .from("scans")
     .insert({

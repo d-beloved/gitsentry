@@ -30,6 +30,7 @@ export async function handleInstallationRepositories(
       installation_id: installationId,
       is_private: (r.private as boolean) ?? false,
       is_active: false,
+      removed_at: null,
     }));
 
     const { error } = await supabase
@@ -88,7 +89,7 @@ export async function handleInstallationRepositories(
 
     const { error } = await supabase
       .from("repos")
-      .update({ is_active: false })
+      .update({ is_active: false, removed_at: new Date().toISOString() })
       .in("github_id", githubIds);
 
     if (error)
