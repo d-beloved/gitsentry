@@ -1,4 +1,4 @@
-import { getDiff } from "../lib/github";
+import { getDiff, postBotPRSkipComment } from "../lib/github";
 import { saveScan, getOrgByInstallationId, scanExistsForCommit } from "../db/queries";
 import { parseDiffStats, truncateDiff } from "../lib/differ";
 import { dispatchScan } from "../lib/queue";
@@ -17,9 +17,22 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     return;
   }
 
-  let org;
-  if (repo.private || action === "synchronize") {
-    org = await getOrgByInstallationId(installationId);
+  const prUser = pr.user as Record<string, unknown>;
+  const prHead = pr.head as Record<string, unknown>;
+  const repoOwner = repo.owner as Record<string, unknown>;
+  const isBot = (prUser.type as string | undefined)?.toLowerCase() === "bot";
+
+  // Only fetch org when a plan check is actually needed.
+  const needsOrg = !!(repo.private) || action === "synchronize" || isBot;
+
+  const [org, alreadyScanned] = await Promise.all([
+    needsOrg ? getOrgByInstallationId(installationId) : Promise.resolve(null),
+    scanExistsForCommit(repo.full_name as string, prHead.sha as string),
+  ]);
+
+  if (alreadyScanned) {
+    console.log(`[PR] Skipping duplicate delivery for ${repo.full_name} commit ${prHead.sha}`);
+    return;
   }
 
   if (repo.private && (!org || org.plan === "free")) {
@@ -32,14 +45,16 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     return;
   }
 
-  const prHead = pr.head as Record<string, unknown>;
-  const prUser = pr.user as Record<string, unknown>;
-  const repoOwner = repo.owner as Record<string, unknown>;
-
-  if (await scanExistsForCommit(repo.full_name as string, prHead.sha as string)) {
-    console.log(
-      `[PR] Skipping duplicate delivery for ${repo.full_name} commit ${prHead.sha}`,
-    );
+  if (isBot && (!org || org.plan === "free")) {
+    if (action === "opened") {
+      postBotPRSkipComment(
+        repo.full_name as string,
+        pr.number as number,
+        prUser.login as string,
+        installationId,
+      ).catch((err: Error) => console.error("[PR] postBotPRSkipComment failed:", err.message));
+    }
+    console.log(`[PR] Skipping bot PR ${repo.full_name}#${pr.number} — free plan`);
     return;
   }
 

@@ -23,7 +23,8 @@ export async function handleIssueComment(
   if (!issue.pull_request) return;
 
   const body = (comment.body as string | undefined)?.trim() ?? "";
-  if (body.toLowerCase() !== "/gitsentry rescan") return;
+  const normalizedBody = body.toLowerCase();
+  if (normalizedBody !== "/gitsentry rescan" && normalizedBody !== "/gitsentry scan") return;
 
   // Only allow collaborators / owners / org members to trigger rescans
   const association = comment.author_association as string;
@@ -52,9 +53,6 @@ export async function handleIssueComment(
   // getOrgByInstallationId now returns OrgWithUsage including subscription_status
   const org = await getOrgByInstallationId(installationId);
   const plan = org?.plan ?? "free";
-  const isPro =
-    plan === "pro" &&
-    (org?.subscription_status === "active" || org?.subscription_status == null);
 
   // Quota check — all plans including Pro (capped at 500/month)
   const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
@@ -93,6 +91,7 @@ export async function handleIssueComment(
 
   const quotaLine = `_This scan uses 1 of your ${remaining} remaining scans this month._`;
 
+  const isScanCommand = normalizedBody === "/gitsentry scan";
   await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
     {
@@ -100,11 +99,11 @@ export async function handleIssueComment(
       repo: repoName,
       issue_number: prNumber,
       body: [
-        `> /gitsentry rescan`,
+        `> ${body}`,
         "",
-        `🔄 **Gitsentry.dev** — re-scan triggered by @${sender}`,
+        `🔄 **Gitsentry.dev** — ${isScanCommand ? "scan" : "re-scan"} triggered by @${sender}`,
         "",
-        `Scanning \`${commitSha.slice(0, 7)}\`… results will update the existing security comment. This takes 30–60 seconds.`,
+        `Scanning \`${commitSha.slice(0, 7)}\`… results will appear as a security comment on this PR. This takes 30–60 seconds.`,
         quotaLine,
         "",
         `_Powered by [Gitsentry.dev](${process.env.PRODUCT_URL})_`,

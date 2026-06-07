@@ -243,14 +243,14 @@ export async function saveFindings(
   }));
 }
 
-/** Returns the GitHub comment ID from the most recent PR scan comment, if any. */
+/** Returns the comment ID and whether the previous scan had findings, or null if no prior comment exists. */
 export async function getPreviousPRCommentId(
   repoId: string,
   prNumber: number,
-): Promise<number | null> {
+): Promise<{commentId: number; hadFindings: boolean} | null> {
   const {data} = await supabase
     .from("scans")
-    .select("gh_comment_id")
+    .select("gh_comment_id, findings_count")
     .eq("repo_id", repoId)
     .eq("trigger_type", "pull_request")
     .eq("trigger_ref", String(prNumber))
@@ -258,7 +258,9 @@ export async function getPreviousPRCommentId(
     .order("created_at", {ascending: false})
     .limit(1)
     .single();
-  return (data as {gh_comment_id: number | null} | null)?.gh_comment_id ?? null;
+  const row = data as {gh_comment_id: number | null; findings_count: number | null} | null;
+  if (!row?.gh_comment_id) return null;
+  return {commentId: row.gh_comment_id, hadFindings: (row.findings_count ?? 0) > 0};
 }
 
 /** Persists the GitHub comment ID returned after posting/updating a PR comment. */

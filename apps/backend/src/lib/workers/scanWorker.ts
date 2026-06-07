@@ -96,12 +96,19 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       repoSecurityContext,
     });
 
-    let findings: Awaited<ReturnType<typeof saveFindings>> = [];
-    if (issues.length > 0) {
-      findings = await saveFindings(scanId, issues);
+    const [findings, previousComment] = await Promise.all([
+      issues.length > 0
+        ? saveFindings(scanId, issues)
+        : Promise.resolve([] as Awaited<ReturnType<typeof saveFindings>>),
+      prNumber != null ? getPreviousPRCommentId(repoId, prNumber) : Promise.resolve(null),
+    ]);
 
-      if (prNumber != null) {
-        const existingCommentId = await getPreviousPRCommentId(repoId, prNumber);
+    if (prNumber != null) {
+      const existingCommentId = previousComment?.commentId ?? null;
+
+      // Skip only when this scan and the prior comment are both already clean.
+      const skipCleanUpdate = issues.length === 0 && !!existingCommentId && !previousComment?.hadFindings;
+      if (!skipCleanUpdate) {
         const commentId = await withTimeout(
           postPRReview(repoFullName, prNumber, findings, summary, scanId, installationId, existingCommentId),
           30_000,
@@ -110,14 +117,16 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
         updateScanCommentId(scanId, commentId).catch((err: Error) =>
           console.error("[worker] updateScanCommentId failed:", err.message),
         );
-      } else if (commitSha) {
-        await withTimeout(
-          postCommitComment(repoFullName, commitSha, findings, summary, scanId, installationId),
-          30_000,
-          "postCommitComment",
-        );
       }
+    } else if (commitSha) {
+      await withTimeout(
+        postCommitComment(repoFullName, commitSha, findings, summary, scanId, installationId),
+        30_000,
+        "postCommitComment",
+      );
+    }
 
+    if (issues.length > 0) {
       await withTimeout(
         notifyIfNeeded(repoId, repoFullName, findings, triggerType, branch, scanId),
         30_000,

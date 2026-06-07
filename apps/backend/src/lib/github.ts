@@ -134,12 +134,30 @@ export async function postCommitComment(
 const PRODUCT_NAME = "Gitsentry.dev";
 const PRODUCT_URL = process.env.PRODUCT_URL;
 
+function formatFooter(summary: string, scanId: string, isUpdate: boolean): string {
+  let footer = `> ${summary}\n\n`;
+  footer += `💬 Comment \`/gitsentry rescan\` on this PR to re-run the scan at any time.\n\n`;
+  footer += `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})`;
+  if (scanId) footer += ` · scan \`${scanId.slice(0, 8)}\``;
+  if (isUpdate) footer += ` · updated ${new Date().toUTCString()}`;
+  footer += `_`;
+  return footer;
+}
+
 function formatReviewBody(
   issues: Finding[],
   summary: string,
   scanId: string,
   isUpdate = false,
 ): string {
+  let body = `## 🔐 ${PRODUCT_NAME} Security Scan\n\n`;
+
+  if (issues.length === 0) {
+    body += `**No security issues found** in this PR. ✅\n\n`;
+    body += formatFooter(summary, scanId, isUpdate);
+    return body;
+  }
+
   const sorted = sortBySeverity(issues);
   const counts = countBySeverity(issues);
 
@@ -147,7 +165,6 @@ function formatReviewBody(
     .filter((s) => counts[s] > 0)
     .map((s) => `${counts[s]} ${s}`);
 
-  let body = `## 🔐 ${PRODUCT_NAME} Security Scan\n\n`;
   body += `Found **${issues.length} issue${issues.length !== 1 ? "s" : ""}** in this PR`;
   if (countParts.length) body += ` (${countParts.join(", ")})`;
   body += `\n\n---\n\n`;
@@ -172,13 +189,7 @@ function formatReviewBody(
     body += `---\n\n`;
   }
 
-  body += `> ${summary}\n\n`;
-  body += `💬 Comment \`/gitsentry rescan\` on this PR to re-run the scan at any time.\n\n`;
-  body += `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})`;
-  if (scanId) body += ` · scan \`${scanId.slice(0, 8)}\``;
-  if (isUpdate) body += ` · updated ${new Date().toUTCString()}`;
-  body += `_`;
-
+  body += formatFooter(summary, scanId, isUpdate);
   return body;
 }
 
@@ -321,6 +332,31 @@ export async function setupBranchProtection(
       },
     );
   }
+}
+
+export async function postBotPRSkipComment(
+  repoFullName: string,
+  prNumber: number,
+  botLogin: string,
+  installationId: number,
+): Promise<void> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  const body = [
+    `## 🔐 ${PRODUCT_NAME} Security Scan`,
+    "",
+    `This PR was opened by **@${botLogin}** (a bot). To protect your monthly scan quota, automatic scanning is paused for bot-authored PRs on this plan.`,
+    "",
+    `Comment \`/gitsentry scan\` on this PR to run a security scan manually.`,
+    "",
+    `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})_`,
+  ].join("\n");
+
+  await octokit.request(
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    {owner, repo, issue_number: prNumber, body},
+  );
 }
 
 // ─── Security context discovery ───────────────────────────────────────────────
