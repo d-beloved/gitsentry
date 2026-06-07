@@ -99,7 +99,7 @@ export async function handleIssueComment(
       repo: repoName,
       issue_number: prNumber,
       body: [
-        `> ${body}`,
+        `> ${normalizedBody}`,
         "",
         `🔄 **Gitsentry.dev** — ${isScanCommand ? "scan" : "re-scan"} triggered by @${sender}`,
         "",

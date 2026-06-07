@@ -58,7 +58,15 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
     // Claim a scan slot for all plans (including Pro, which is capped at 500/month).
     // Skip when the caller already claimed atomically (rescan endpoint, issue_comment
     // webhook) to prevent double-counting.
-    if (org && !quotaAlreadyClaimed) {
+    // When org is null (public repo with no DB record yet) treat as anonymous free tier.
+    if (!quotaAlreadyClaimed) {
+      if (!org) {
+        // No org record means we cannot enforce per-org quota — fail closed to prevent
+        // unlimited free scans on public repos that never completed installation setup.
+        console.log(`[worker] Scan ${scanId} skipped: no org record (installation incomplete)`);
+        await updateScanStatus(scanId, [], 0, "failed");
+        return;
+      }
       const claimed = await tryClaimScan(org.id, scanLimit, org.plan ?? "free", org.scan_month ?? null);
       if (!claimed) {
         console.log(
