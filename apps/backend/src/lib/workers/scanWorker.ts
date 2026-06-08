@@ -1,5 +1,5 @@
 import type Bull from "bull";
-import { analyzeCode, discoverSecurityContext } from "../ai";
+import { analyzeCode, discoverSecurityContext, classifyProject } from "../ai";
 import {
   postPRReview,
   postCommitComment,
@@ -7,7 +7,10 @@ import {
   postUpgradeComment,
   setupBranchProtection,
   fetchRepoAuthFiles,
+  fetchRepoManifestFiles,
 } from "../github";
+import { extractPathsFromDiff } from "../../../../../packages/scanner-contract/classifier";
+import type { ProjectClassification } from "../../../../../packages/scanner-contract/scanner-rules";
 import {
   saveFindings,
   updateScanStatus,
@@ -80,29 +83,54 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       }
     }
 
-    // Fetch or discover the per-repo security context so the AI understands
-    // this codebase's auth and rate-limit patterns before scanning.
+    // Stage 1 — Project classifier + security context discovery run in parallel.
+    // Classifier uses diff paths + manifest to determine project type so Stage 2
+    // can apply the correct rules and skip inapplicable categories.
     let repoSecurityContext = await getRepoSecurityContext(repoId);
+    let classification: ProjectClassification | undefined;
+
     if (!repoSecurityContext) {
       try {
-        const authFiles = await fetchRepoAuthFiles(repoFullName, branch, installationId);
-        if (authFiles.length > 0) {
-          repoSecurityContext = await discoverSecurityContext(authFiles, repoFullName);
-          if (repoSecurityContext) {
-            saveRepoSecurityContext(repoId, repoSecurityContext).catch((err: Error) =>
-              console.error("[worker] saveRepoSecurityContext failed:", err.message),
-            );
-          }
+        const diffPaths = extractPathsFromDiff(diff);
+        const [authFiles, manifestContent] = await Promise.all([
+          fetchRepoAuthFiles(repoFullName, branch, installationId),
+          fetchRepoManifestFiles(repoFullName, branch, installationId),
+        ]);
+
+        const allPaths = [...new Set([...diffPaths, ...authFiles.map((f) => f.path)])];
+
+        [repoSecurityContext, classification] = await Promise.all([
+          authFiles.length > 0
+            ? discoverSecurityContext(authFiles, repoFullName)
+            : Promise.resolve(""),
+          classifyProject(allPaths, repoFullName, manifestContent ?? undefined),
+        ]);
+
+        if (repoSecurityContext) {
+          saveRepoSecurityContext(repoId, repoSecurityContext).catch((err: Error) =>
+            console.error("[worker] saveRepoSecurityContext failed:", err.message),
+          );
         }
       } catch (err) {
-        console.warn("[worker] security context discovery failed — scanning without it:", (err as Error).message);
+        console.warn("[worker] pre-scan discovery failed — scanning without it:", (err as Error).message);
       }
+    } else {
+      // Security context cached — still run the classifier (cheap, no file fetches)
+      // so we always apply context-aware rules even on repeat scans.
+      const diffPaths = extractPathsFromDiff(diff);
+      classification = await classifyProject(diffPaths, repoFullName).catch(() => undefined);
+    }
+
+    if (classification) {
+      console.log(
+        `[worker] Classified ${repoFullName} as ${classification.project_type} (${classification.confidence}) — ${classification.reasoning}`,
+      );
     }
 
     const { issues, summary, tokens_in, tokens_out, model_name } = await analyzeCode(diff, {
       ...context,
       repoSecurityContext,
-    });
+    }, { classification });
 
     const [findings, previousComment] = await Promise.all([
       issues.length > 0

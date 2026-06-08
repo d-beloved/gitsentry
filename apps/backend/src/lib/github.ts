@@ -359,6 +359,87 @@ export async function postBotPRSkipComment(
   );
 }
 
+// ─── Project classifier support ───────────────────────────────────────────────
+
+// Source code and documentation extensions to exclude when scanning for manifests.
+// Everything else at the root level that is small is likely a manifest of some kind.
+const SOURCE_EXTS = new Set([
+  "ts", "tsx", "js", "jsx", "mjs", "cjs",
+  "py", "rb", "go", "java", "kt", "scala", "cs", "fs", "vb",
+  "cpp", "cc", "c", "h", "hpp", "rs", "swift", "m",
+  "php", "lua", "ex", "exs", "erl", "hs", "ml", "r", "dart",
+  "sh", "bash", "zsh", "fish", "ps1", "bat", "cmd",
+  "md", "txt", "rst", "adoc", "html", "css", "scss", "svg", "png",
+  "jpg", "jpeg", "gif", "ico", "woff", "woff2", "ttf", "eot",
+  "lock", "sum", "log",
+]);
+
+const DOC_NAME_RE = /^(readme|license|licence|changelog|contributing|authors|notice|patents|codeowners|security)/i;
+
+function looksLikeManifest(path: string): boolean {
+  if (path.includes("/")) return false; // root-level only
+  if (DOC_NAME_RE.test(path)) return false;
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  if (SOURCE_EXTS.has(ext)) return false;
+  return true;
+}
+
+/**
+ * Scans the root tree for any file that looks like a project manifest
+ * (non-source, non-doc root-level file) and returns its content.
+ * Works across any language — no hardcoded list of filenames needed.
+ */
+export async function fetchRepoManifestFiles(
+  repoFullName: string,
+  branch: string,
+  installationId: number,
+): Promise<string | null> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  // Fetch root tree (non-recursive — manifests are at root)
+  let rootFiles: Array<{path?: string; type?: string; size?: number; sha?: string}> = [];
+  try {
+    const {data: tree} = await octokit.request(
+      "GET /repos/{owner}/{repo}/git/trees/{ref}",
+      {owner, repo, ref: branch},
+    );
+    rootFiles = (tree.tree ?? []).filter(
+      (f: {path?: string; type?: string; size?: number}) =>
+        f.type === "blob" &&
+        typeof f.path === "string" &&
+        looksLikeManifest(f.path) &&
+        (f.size ?? 0) < 50_000,
+    );
+  } catch {
+    return null;
+  }
+
+  if (!rootFiles.length) return null;
+
+  // Fetch all candidate manifests in parallel and concatenate (up to 5, 3KB each)
+  const results = await Promise.all(
+    rootFiles.slice(0, 5).map(async (f) => {
+      try {
+        const {data} = await octokit.request(
+          "GET /repos/{owner}/{repo}/contents/{path}",
+          {owner, repo, path: f.path!, ref: branch},
+        );
+        if (data && "content" in data && typeof data.content === "string") {
+          const content = Buffer.from(data.content, "base64").toString("utf8");
+          return `=== ${f.path} ===\n${content.slice(0, 3_000)}`;
+        }
+      } catch { /* skip */ }
+      return null;
+    }),
+  );
+
+  const combined = results.filter(Boolean).join("\n\n");
+  return combined || null;
+
+  return null;
+}
+
 // ─── Security context discovery ───────────────────────────────────────────────
 
 const AUTH_FILE_CANDIDATES = [

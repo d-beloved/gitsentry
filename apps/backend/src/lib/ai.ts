@@ -1,6 +1,9 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { extractWithContext } from "./differ";
 import type { AIAnalysisResult, ScanContext } from "../../../../packages/scanner-contract/types";
+import type { ProjectClassification } from "../../../../packages/scanner-contract/scanner-rules";
+import { PROJECT_TYPE_RULES, isTestScaffolding } from "../../../../packages/scanner-contract/scanner-rules";
+import { buildClassifierPrompt, parseClassificationResponse } from "../../../../packages/scanner-contract/classifier";
 
 if (!process.env.GEMINI_API_KEY) {
   throw new Error("GEMINI_API_KEY is not set — cannot start without AI provider");
@@ -125,19 +128,62 @@ const ADVERSARIAL_CATEGORIES: [string, string][] = [
 
 const ALL_CATEGORIES = [...CORE_CATEGORIES, ...ADVERSARIAL_CATEGORIES];
 
+/**
+ * Stage 1 — classify a repository's project type so the scanner can apply
+ * context-aware rules. Runs as a lightweight Gemini call using the same
+ * discovery model. Silently returns "unknown" on any failure.
+ *
+ * @param filePaths   File paths from the diff or repo tree
+ * @param repoFullName  "owner/repo"
+ * @param manifestContent  Raw content of package.json / Gemfile / etc. if available
+ */
+export async function classifyProject(
+  filePaths: string[],
+  repoFullName: string,
+  manifestContent?: string,
+): Promise<ProjectClassification> {
+  const fallback: ProjectClassification = {
+    project_type: "unknown",
+    deployment_context: "deployed_by_author",
+    test_paths: [],
+    confidence: "low",
+    reasoning: "Classification skipped.",
+  };
+  if (!filePaths.length) return fallback;
+
+  try {
+    const model = genAI.getGenerativeModel({
+      model: DISCOVERY_MODEL,
+      generationConfig: { responseMimeType: "application/json" },
+    });
+    const prompt = buildClassifierPrompt(repoFullName, filePaths, manifestContent);
+    const result = await Promise.race([
+      model.generateContent(prompt),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("classifier timed out")), 15_000),
+      ),
+    ]);
+    return parseClassificationResponse(result.response.text());
+  } catch (err) {
+    console.warn("[ai] classifyProject failed:", (err as Error).message);
+    return fallback;
+  }
+}
+
 export async function analyzeCode(
   diff: string,
   context: ScanContext,
-  options: { mode?: "diff_scan" | "security_sweep" } = {},
+  options: { mode?: "diff_scan" | "security_sweep"; classification?: ProjectClassification } = {},
 ): Promise<AIAnalysisResult> {
   const mode = options.mode === "security_sweep" ? "security_sweep" : "diff_scan";
+  const classification = options.classification;
   const modelName = mode === "security_sweep" ? SWEEP_MODEL : SCAN_MODEL;
   const model = genAI.getGenerativeModel({
     model: modelName,
     generationConfig: {responseMimeType: "application/json"},
   });
   const input = mode === "diff_scan" ? extractWithContext(diff) : diff;
-  const prompt = buildPrompt(input, context, mode);
+  const prompt = buildPrompt(input, context, mode, classification);
 
   const AI_TIMEOUT_MS = 120_000;
   const timeoutPromise = new Promise<never>((_, reject) =>
@@ -155,8 +201,18 @@ export async function analyzeCode(
     const cleanJson = jsonMatch ? jsonMatch[0] : text;
 
     const parsed = JSON.parse(cleanJson) as AIAnalysisResult;
+    const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
+
+    // Post-filter: drop findings in test scaffolding paths (static list + classifier-identified paths).
+    const classifierTestPaths = classification?.test_paths ?? [];
+    const issues = rawIssues.filter(
+      (issue) =>
+        !isTestScaffolding(issue.file_path) &&
+        !classifierTestPaths.some((p) => issue.file_path.toLowerCase().startsWith(p.toLowerCase())),
+    );
+
     return {
-      issues: Array.isArray(parsed.issues) ? parsed.issues : [],
+      issues,
       summary: parsed.summary || "Analysis complete.",
       scan_mode: mode,
       tokens_in: tokensIn,
@@ -175,11 +231,12 @@ export async function analyzeCode(
 export function analyzeSecuritySweep(
   input: string,
   context: Omit<ScanContext, "triggerType">,
+  classification?: ProjectClassification,
 ): Promise<AIAnalysisResult> {
   return analyzeCode(
     input,
     { ...context, triggerType: "security_sweep" },
-    { mode: "security_sweep" },
+    { mode: "security_sweep", classification },
   );
 }
 
@@ -312,7 +369,7 @@ function categoryList(categories: [string, string][]): string {
     .join("\n");
 }
 
-function buildPrompt(input: string, context: ScanContext, mode: string): string {
+function buildPrompt(input: string, context: ScanContext, mode: string, classification?: ProjectClassification): string {
   const isSweep = mode === "security_sweep";
   const inputLabel = isSweep
     ? "CODEBASE, DESIGN NOTES, OR SELECTED CONTEXT TO AUDIT"
@@ -322,6 +379,23 @@ function buildPrompt(input: string, context: ScanContext, mode: string): string 
     ? `\nREPO SECURITY CONTEXT (auto-discovered from this codebase — use as supporting context only):
 ${context.repoSecurityContext}
 If a documented pattern is visibly present in the diff or surrounding context lines, factor it into your confidence level. Do not suppress a finding solely because a pattern is listed here — verify its presence in the actual code.\n`
+    : "";
+
+  // Stage 2: apply per-project-type rules from scanner-rules config
+  const rules = classification ? PROJECT_TYPE_RULES[classification.project_type] : null;
+  const skipSet = new Set(rules?.skip_categories ?? []);
+  const deprioritizeSet = new Set(rules?.deprioritize_categories ?? []);
+  const allTestPaths = [...(classification?.test_paths ?? [])];
+
+  const classificationSection = classification
+    ? `\nPROJECT CLASSIFICATION (Stage 1 — use to scope your analysis):
+- Type: ${classification.project_type} — ${rules?.description ?? ""}
+- Deployment: ${classification.deployment_context}
+- Confidence: ${classification.confidence} (${classification.reasoning})
+${rules?.extra_instructions ? `- Instruction: ${rules.extra_instructions}` : ""}
+${allTestPaths.length ? `- Skip findings in these test scaffolding paths: ${allTestPaths.join(", ")}` : ""}
+${deprioritizeSet.size ? `- Flag these categories ONLY with very clear, concrete evidence: ${[...deprioritizeSet].join(", ")}` : ""}
+`
     : "";
 
   const scopeRules = isSweep
@@ -343,6 +417,9 @@ DIFF SCAN MODE:
 - Only report a broader risk when the added code itself creates a realistic exploit path.
 `;
 
+  // Filter out categories that do not apply to this project type
+  const applicableCategories = ALL_CATEGORIES.filter(([key]) => !skipSet.has(key));
+
   return `
 You are a senior application security engineer specialising in vulnerabilities
 introduced by AI coding assistants (Cursor, Copilot, Claude Code).
@@ -357,11 +434,11 @@ CONTEXT:
 - Trigger: ${context.triggerType}
 - Author: ${context.author || "unknown"}
 - Scan mode: ${mode}
-${repoContextSection}
+${repoContextSection}${classificationSection}
 ${scopeRules}
 
 SECURITY CATEGORIES TO CHECK (in order of importance):
-${categoryList(ALL_CATEGORIES)}
+${categoryList(applicableCategories)}
 
 THREAT MODELING CHECKLIST:
 - Attacker profiles: anonymous user, authenticated user, malicious insider, API consumer, compromised integration.
