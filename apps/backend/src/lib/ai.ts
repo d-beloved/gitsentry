@@ -404,6 +404,7 @@ SECURITY SWEEP MODE:
 - Perform an adversarial review across frontend, backend, auth, database, infrastructure assumptions, integrations, and dependencies.
 - Define attacker profiles, entry points, trust boundaries, and sensitive assets.
 - Look for chained attack paths and non-obvious business logic flaws unique to this system.
+- CALL-LAYER RULE: You may be seeing multiple files without the complete call graph. Identify the actual public entry points visible in the provided code — route definitions, exported handlers, webhooks, cron jobs, WebSocket handlers. Do NOT flag missing_auth or idor in internal service, action, or repository files based on absence of checks within those files alone. Auth and ownership enforcement belong at the entry-point layer (route/controller/middleware), not inside service functions. Flag the entry point where enforcement is missing, not the downstream function it calls.
 - You may flag potential risks when context is incomplete, but clearly mark the evidence and confidence.
 `
     : `
@@ -413,6 +414,7 @@ DIFF SCAN MODE:
 - Read the full hunk context before flagging: if an auth check, ownership guard, or rate-limit call appears in the same function (even in unchanged lines), do NOT flag a finding based only on the fetch/action line.
 - "fetch-then-check" is a valid authorization pattern: fetching a resource and then verifying ownership is NOT an IDOR if an ownership check follows in the same function.
 - Quota or usage-based enforcement (monthly limits, trial slots) IS rate limiting for SaaS products — do not flag missing_rate_limit solely because there is no IP-based middleware.
+- CALL-LAYER RULE: If the changed file is an internal layer (actions, services, repositories, models, helpers, utilities) and no route definition or exported HTTP handler is visible in the diff, do NOT flag missing_auth or idor from the absence of checks within that file. Auth and ownership are enforced in the calling route or middleware — "this function doesn't check auth" is not a finding; "this route is reachable without auth" is. Only flag missing_auth or idor when you can see a public-facing entry point in the diff that lacks visible enforcement in its immediate context.
 - Prefer concrete, actionable findings over speculative architecture advice.
 - Only report a broader risk when the added code itself creates a realistic exploit path.
 `;
