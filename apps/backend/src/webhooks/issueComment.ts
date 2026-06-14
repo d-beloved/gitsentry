@@ -87,7 +87,10 @@ export async function handleIssueComment(
     plan === "free"
       ? (org?.scan_month === currentCalMonth ? (org?.scan_count_month ?? 0) : 0)
       : (org?.scan_count_month ?? 0);
-  const remaining = Math.max(0, scanLimit - scansUsed - 1);
+  // scansUsed is the pre-claim count from the org snapshot fetched before
+  // tryClaimScan incremented it. "remaining" = slots available before this scan
+  // so "This scan uses 1 of your X remaining" reads correctly.
+  const remaining = Math.max(0, scanLimit - scansUsed);
 
   const quotaLine = `_This scan uses 1 of your ${remaining} remaining scans this month._`;
 
@@ -103,7 +106,7 @@ export async function handleIssueComment(
         "",
         `🔄 **Gitsentry.dev** — ${isScanCommand ? "scan" : "re-scan"} triggered by @${sender}`,
         "",
-        `Scanning \`${commitSha.slice(0, 7)}\`… results will appear as a security comment on this PR. This takes 30–60 seconds.`,
+        `Scanning \`${commitSha.slice(0, 7)}\`… the existing GitSentry security comment on this PR will be updated with new results. This takes 30–60 seconds.`,
         quotaLine,
         "",
         `_Powered by [Gitsentry.dev](${process.env.PRODUCT_URL})_`,

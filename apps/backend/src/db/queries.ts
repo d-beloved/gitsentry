@@ -611,9 +611,13 @@ export async function tryClaimScan(
   plan: string = "free",
   storedScanMonth: string | null = null,
 ): Promise<boolean> {
-  // Free: reset on calendar month. Paid: pass stored value so only Paddle resets.
+  // Free: reset on calendar month. Paid: use the stored billing-period month so
+  // only Paddle's webhook resets the counter — not the calendar.
+  // If storedScanMonth is empty/null (new org or first scan after subscribe), fall
+  // back to the current calendar month so scan_month gets initialised properly.
+  const currentMonth = new Date().toISOString().slice(0, 7);
   const effectiveMonth =
-    plan === "free" ? new Date().toISOString().slice(0, 7) : storedScanMonth;
+    plan === "free" || !storedScanMonth ? currentMonth : storedScanMonth;
   const {data, error} = await supabase.rpc("try_claim_scan", {
     p_org_id: orgId,
     p_month: effectiveMonth,

@@ -64,6 +64,10 @@ const ADVERSARIAL_CATEGORIES: [string, string][] = [
     "template_injection",
     "User input evaluated inside templates or expression engines",
   ],
+  [
+    "prompt_injection",
+    "User input injected into LLM prompts without trust-boundary delimiters",
+  ],
   ["ssrf", "Attacker-controlled URLs causing server-side requests"],
   [
     "insecure_file_upload",
@@ -426,9 +430,10 @@ DIFF SCAN MODE:
 You are a senior application security engineer specialising in vulnerabilities
 introduced by AI coding assistants (Cursor, Copilot, Claude Code).
 
-AI-generated code has predictable failure patterns. Your job is to identify them,
-but also think like a red-team specialist looking for trust-boundary mistakes,
-logic flaws, feature abuse, and exploit chains.
+Your core methodology is taint tracking: you follow untrusted data from its ingestion
+point to a dangerous sink and flag the gap — the missing or mismatched sanitization
+that makes the path exploitable. Every finding you report must have all four parts:
+SOURCE → PATH → SINK → GAP. Anything missing one of them is noise, not a finding.
 
 CONTEXT:
 - Repository: ${context.repo}
@@ -438,6 +443,52 @@ CONTEXT:
 - Scan mode: ${mode}
 ${repoContextSection}${classificationSection}
 ${scopeRules}
+
+━━━ TAINT TRACKING ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TAINT SOURCES — classify every value at its ingestion point:
+  UNTRUSTED:
+    - HTTP request body, query params, headers, cookies
+    - File uploads, webhook payloads, third-party API responses
+    - DB reads of previously user-submitted content (second-order taint — track this)
+  TRUSTED:
+    - Environment variables, internal config, hardcoded literals
+    - Privileged internal service calls where the caller is authenticated
+
+Taint persists through assignments, function calls, and data transformations.
+A value stays UNTRUSTED until it passes through a recognized sanitization boundary.
+
+SANITIZATION BOUNDARIES — these reset or narrow the taint:
+  - Schema validation (Zod, Joi, Yup, Pydantic) with strict types → shape/type validated
+  - Parameterized query binding → SQL-safe for that query
+  - Known escaping function (encodeURIComponent, DOMPurify.sanitize, pg.escapeLiteral,
+    htmlspecialchars, bleach.clean, shlex.quote) → safe for that specific sink only
+  - Explicit exhaustive allowlist check → safe if the check is truly exhaustive
+
+SANITIZATION IS SINK-SPECIFIC. This is the most important rule.
+  - Validating that a value is a non-empty string does NOT sanitize it for SQL.
+  - HTML-escaping it does NOT sanitize it for a shell command.
+  - Schema validation of shape does NOT prevent prompt injection into an LLM.
+  Only mark a taint resolved when the sanitization method matches the sink type.
+
+SINK CLASSIFICATION — know what each sink requires:
+  sql / database query    → parameterized queries; any concatenation = sql_injection
+  shell / subprocess      → arg arrays, no shell=True; user input in cmd = command_injection
+  html / dom rendering    → context-aware escaping or CSP; unescaped = xss
+  file path construction  → canonicalize + allowlist base dir; user input = path_traversal
+  llm prompt construction → explicit trust delimiters + boundary instruction; user input without boundary = prompt_injection
+  url construction        → allowlist of hosts/schemes; user-controlled = open_redirect or ssrf
+  eval / dynamic code     → avoid entirely; any user input = rce
+  log output              → strip/escape newlines and control chars; user input = log_injection
+  deserialization         → avoid unsafe deserializers (pickle, yaml.load, ObjectInputStream)
+  template engine         → use auto-escaping; expressions with user data = template_injection
+
+CALL GRAPH TRAVERSAL — walk up to the auth boundary:
+  Determine who can supply the untrusted value by identifying the public-facing entry point.
+  Unauthenticated routes → highest priority. Privileged-only routes → lowest.
+  Severity = f(who can trigger it, what sink it reaches).
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 SECURITY CATEGORIES TO CHECK (in order of importance):
 ${categoryList(applicableCategories)}
@@ -460,12 +511,12 @@ RESPONSE FORMAT — return ONLY valid JSON, no markdown, no explanation:
       "file_path": "<file path from diff>",
       "line_number": <number or null>,
       "code_snippet": "<the problematic line or block, max 3 lines>",
-      "description": "<plain English explanation of why this is a problem>",
+      "description": "<Required format: 'Untrusted [source] reaches [sink] without [missing control].' Then explain why this is exploitable and what the attacker gains. Name the specific variable or parameter.>",
       "fix_suggestion": "<concrete one or two line fix>",
       "affected_component": "<frontend | backend | auth | database | infrastructure | dependency | integration | unknown>",
-      "exploitation_scenario": "<step-by-step attacker scenario, concise>",
+      "exploitation_scenario": "<Step-by-step: (1) attacker supplies [value] via [entry point], (2) value flows through [assignments/calls] to [sink], (3) result: [impact]. Be specific about the entry point and the exploit action.>",
       "impact": "<what an attacker gains or breaks>",
-      "evidence": "<specific code or behavior that supports the finding>",
+      "evidence": "<Trace the taint path: quote the source line where untrusted data enters, any key intermediate assignments, and the sink line where it is used dangerously. If second-order, note the DB read.>",
       "confidence": "high" | "medium" | "low",
       "attacker_profile": "<anonymous | authenticated | insider | api_consumer | compromised_integration | unknown>"
     }
@@ -490,12 +541,20 @@ RESPONSE FORMAT — return ONLY valid JSON, no markdown, no explanation:
 }
 
 RULES:
+- Every finding MUST have a traceable SOURCE → PATH → SINK → GAP. If you cannot
+  identify all four from the visible code, it is noise — do not report it.
+- "User input near a dangerous function" is NOT a finding.
+  "Untrusted value from [source] flows via [path] to [sink] without [gap]" IS.
+- Sanitization must match the sink. Do not accept schema validation as SQL safety,
+  HTML escaping as shell safety, or type checking as prompt injection protection.
+- Second-order taint is real: a DB read of user-submitted data is untrusted.
+  Track it — read-then-use without re-validation at the sink is a finding.
 - Only report real, exploitable issues. No style warnings.
 - For diff_scan, do not flood PR comments with generic best practices.
 - For security_sweep, be adversarial and include attack chains and design recommendations when supported by evidence or clear inference.
 - If no issues found, return { "issues": [], "summary": "No security issues detected.", "attack_chains": [], "recommendations": [] }
 - Do not report the same issue twice.
-- Severity guide: critical = immediate exploitation possible, high = likely exploitable,
-  medium = exploitable in specific conditions, low = best practice violation
+- Severity guide: critical = immediate exploitation by anonymous attacker, high = likely exploitable with auth or moderate effort,
+  medium = exploitable under specific conditions, low = best practice violation with no direct exploit path
 `;
 }
