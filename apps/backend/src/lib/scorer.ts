@@ -24,11 +24,3 @@ export function sortBySeverity<T extends { severity: string }>(issues: T[]): T[]
       (SEVERITY_ORDER[b.severity as Severity] ?? 99),
   );
 }
-
-export function hasMinSeverity(
-  issues: Array<{ severity: string }>,
-  minSeverity: Severity,
-): boolean {
-  const threshold = SEVERITY_ORDER[minSeverity] ?? 99;
-  return issues.some((i) => (SEVERITY_ORDER[i.severity as Severity] ?? 99) <= threshold);
-}

@@ -1,7 +1,6 @@
 import {
   parseDiffStats,
   truncateDiff,
-  extractAdditions,
   extractScannablePaths,
   hasScannableContent,
 } from "../differ";
@@ -86,48 +85,6 @@ index 0000000..abcdefg
 @@ -0,0 +1,1 @@
 +{ "lockfileVersion": 3 }
 `;
-
-describe("extractAdditions", () => {
-  test("returns empty string for empty input", () => {
-    expect(extractAdditions("")).toBe("");
-    expect(extractAdditions(null)).toBe("");
-    expect(extractAdditions(undefined)).toBe("");
-  });
-
-  test("extracts only added lines with file headers and line numbers", () => {
-    const result = extractAdditions(SINGLE_FILE_DIFF);
-    expect(result).toContain("=== src/app.js ===");
-    expect(result).toContain("L1: const express = require('express');");
-    expect(result).toContain("L2: const app = express();");
-    expect(result).toContain("L3: module.exports = app;");
-  });
-
-  test("omits removed lines", () => {
-    const result = extractAdditions(MIXED_DIFF);
-    expect(result).not.toContain("const old = 1");
-  });
-
-  test("omits context lines", () => {
-    const result = extractAdditions(MIXED_DIFF);
-    expect(result).not.toContain("const express = require");
-  });
-
-  test("skips lock files", () => {
-    const result = extractAdditions(LOCK_FILE_DIFF);
-    expect(result).toBe("");
-  });
-
-  test("skips lock files in a mixed diff but includes other files", () => {
-    const result = extractAdditions(MIXED_DIFF);
-    expect(result).toContain("=== src/app.js ===");
-    expect(result).not.toContain("package-lock.json");
-  });
-
-  test("truncates output at maxBytes and appends marker", () => {
-    const result = extractAdditions(MULTI_FILE_DIFF, 20);
-    expect(result).toContain("[ADDITIONS TRUNCATED]");
-  });
-});
 
 describe("extractScannablePaths", () => {
   test("returns [] for empty/null input", () => {

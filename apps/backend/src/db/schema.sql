@@ -134,6 +134,11 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS is_stale BOOLEAN DEFAULT FALSE;
 -- so the scanner understands this repo's auth and rate-limit patterns.
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS security_context TEXT;
 
+-- Tracks when security_context was last (re)discovered, so the scanner can
+-- invalidate a stale cache after a TTL even when no auth file changed —
+-- see resolveSecurityContext() in apps/backend/src/lib/securityContext.ts.
+ALTER TABLE repos ADD COLUMN IF NOT EXISTS security_context_updated_at TIMESTAMPTZ;
+
 -- Phase 6: monthly sweep quota tracking on orgs — mirrors scan_count_month /
 -- scan_month but for security sweeps. Used to enforce per-plan monthly limits:
 -- Starter = 1/month, Pro = 10/month. Free plan keeps using sweep_trials_used

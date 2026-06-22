@@ -1,16 +1,13 @@
 import type Bull from "bull";
-import { analyzeCode, discoverSecurityContext, classifyProject } from "../ai";
+import { analyzeCode } from "../ai";
 import {
   postPRReview,
   postCommitComment,
   postCheckRun,
   postUpgradeComment,
   setupBranchProtection,
-  fetchRepoAuthFiles,
-  fetchRepoManifestFiles,
 } from "../github";
-import { extractPathsFromDiff } from "../../../../../packages/scanner-contract/classifier";
-import type { ProjectClassification } from "../../../../../packages/scanner-contract/scanner-rules";
+import { resolveSecurityContext } from "../securityContext";
 import {
   saveFindings,
   updateScanStatus,
@@ -18,8 +15,6 @@ import {
   tryClaimScan,
   getPreviousPRCommentId,
   updateScanCommentId,
-  getRepoSecurityContext,
-  saveRepoSecurityContext,
   recordAiUsage,
 } from "../../db/queries";
 import { notifyIfNeeded } from "../notifier";
@@ -84,76 +79,19 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       }
     }
 
-    // Stage 1 — Project classifier + security context discovery run in parallel.
-    // Classifier uses diff paths + manifest to determine project type so Stage 2
-    // can apply the correct rules and skip inapplicable categories.
-    let repoSecurityContext = await getRepoSecurityContext(repoId);
-    let classification: ProjectClassification | undefined;
-
-    if (!repoSecurityContext) {
-      try {
-        const diffPaths = extractPathsFromDiff(diff);
-        const [authFiles, manifestContent] = await Promise.all([
-          fetchRepoAuthFiles(repoFullName, branch, installationId),
-          fetchRepoManifestFiles(repoFullName, branch, installationId),
-        ]);
-
-        const allPaths = [...new Set([...diffPaths, ...authFiles.map((f) => f.path)])];
-
-        const [discoveryResult, classifyResult] = await Promise.all([
-          authFiles.length > 0
-            ? discoverSecurityContext(authFiles, repoFullName)
-            : Promise.resolve(null),
-          classifyProject(allPaths, repoFullName, manifestContent ?? undefined),
-        ]);
-
-        repoSecurityContext = discoveryResult?.context ?? "";
-        classification = classifyResult.classification;
-
-        if (discoveryResult) {
-          recordAiUsage({
-            surface: "discovery",
-            model: discoveryResult.model,
-            tokensIn: discoveryResult.tokensIn,
-            tokensOut: discoveryResult.tokensOut,
-            scanId,
-            repoId,
-          }).catch((err: Error) => console.error("[worker] recordAiUsage(discovery) failed:", err.message));
-        }
-        recordAiUsage({
-          surface: "classifier",
-          model: classifyResult.model,
-          tokensIn: classifyResult.tokensIn,
-          tokensOut: classifyResult.tokensOut,
-          scanId,
-          repoId,
-        }).catch((err: Error) => console.error("[worker] recordAiUsage(classifier) failed:", err.message));
-
-        if (repoSecurityContext) {
-          saveRepoSecurityContext(repoId, repoSecurityContext).catch((err: Error) =>
-            console.error("[worker] saveRepoSecurityContext failed:", err.message),
-          );
-        }
-      } catch (err) {
-        console.warn("[worker] pre-scan discovery failed — scanning without it:", (err as Error).message);
-      }
-    } else {
-      // Security context cached — still run the classifier (cheap, no file fetches)
-      // so we always apply context-aware rules even on repeat scans.
-      const diffPaths = extractPathsFromDiff(diff);
-      const classifyResult = await classifyProject(diffPaths, repoFullName).catch(() => undefined);
-      classification = classifyResult?.classification;
-      if (classifyResult) {
-        recordAiUsage({
-          surface: "classifier",
-          model: classifyResult.model,
-          tokensIn: classifyResult.tokensIn,
-          tokensOut: classifyResult.tokensOut,
-          scanId,
-          repoId,
-        }).catch((err: Error) => console.error("[worker] recordAiUsage(classifier) failed:", err.message));
-      }
-    }
+    // Stage 1 — security context (cached, refreshed on auth-file touch or TTL
+    // expiry) + project classifier (always re-run, cheap). See securityContext.ts.
+    const { repoSecurityContext, classification } = await resolveSecurityContext({
+      repoId,
+      repoFullName,
+      branch,
+      installationId,
+      diff,
+      scanId,
+    }).catch((err: Error) => {
+      console.warn("[worker] resolveSecurityContext failed — scanning without it:", err.message);
+      return { repoSecurityContext: "", classification: undefined };
+    });
 
     if (classification) {
       console.log(

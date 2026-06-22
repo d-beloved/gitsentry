@@ -442,7 +442,7 @@ export async function fetchRepoManifestFiles(
 
 // ─── Security context discovery ───────────────────────────────────────────────
 
-const AUTH_FILE_CANDIDATES = [
+export const AUTH_FILE_CANDIDATES = [
   ".gitsentry/context.md",
   "middleware.ts",
   "middleware.js",

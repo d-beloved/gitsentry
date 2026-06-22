@@ -1,6 +1,7 @@
 import express, {Request, Response, NextFunction} from "express";
 import {analyzeSecuritySweep} from "../lib/ai";
 import {getSweepDiff} from "../lib/github";
+import {resolveSecurityContext} from "../lib/securityContext";
 import {
   saveSweepScan,
   saveFindings,
@@ -129,16 +130,30 @@ router.post(
 
       scan = await saveSweepScan(repoId, branch);
 
+      const { repoSecurityContext, classification } = await resolveSecurityContext({
+        repoId,
+        repoFullName,
+        branch,
+        installationId,
+        diff,
+        scanId: scan.id,
+      }).catch((err: Error) => {
+        console.warn("[sweep] resolveSecurityContext failed — sweeping without it:", err.message);
+        return { repoSecurityContext: "", classification: undefined };
+      });
+
       const context = {
         repo: repoFullName,
         branch,
         triggerType: "security_sweep" as const,
         author: null,
+        repoSecurityContext,
       };
 
       const result = await analyzeSecuritySweep(
         truncateDiff(diff, 30000),
         context,
+        classification,
       );
       const {
         issues = [],

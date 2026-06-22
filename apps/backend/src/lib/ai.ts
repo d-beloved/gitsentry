@@ -478,7 +478,12 @@ How to use this:
   UNLESS the diff itself shows the boundary being bypassed or contradicted (e.g. the route reads
   the trusted header directly from a public path instead of relying on the gateway, or the
   constrained field is changed in this diff to accept new/free-form input). When in doubt, lower
-  confidence rather than suppress.\n`
+  confidence rather than suppress.
+- Lines starting "Learned false positive:" name a category that maintainers have dismissed as a
+  false positive 2+ times in THIS repo. Do not blanket-suppress that category — a genuinely
+  different instance can still be real — but require stronger, more concrete evidence (an actual
+  exploitable path, not just a pattern match) before flagging it again, and lower confidence on
+  borderline cases in that category.\n`
     : "";
 
   // Stage 2: apply per-project-type rules from scanner-rules config

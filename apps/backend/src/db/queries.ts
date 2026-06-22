@@ -362,7 +362,7 @@ async function markStaleFindings(scanId: string): Promise<void> {
     .eq("is_stale", false);
 }
 
-export async function getPublicStats(): Promise<PublicStatsRow | null> {
+async function getPublicStats(): Promise<PublicStatsRow | null> {
   const {data, error} = await supabase
     .from("public_stats")
     .select("*")
@@ -488,60 +488,6 @@ export async function getOrgByRepoId(
   return (data as unknown as {orgs: OrgWithUsage | null}).orgs ?? null;
 }
 
-export async function incrementScanCount(orgId: string): Promise<void> {
-  const currentMonth = new Date().toISOString().slice(0, 7);
-
-  const {data: org} = await supabase
-    .from("orgs")
-    .select("scan_count_month, scan_month")
-    .eq("id", orgId)
-    .single();
-
-  const row = org as Pick<OrgRow, "scan_count_month" | "scan_month"> | null;
-  const needsReset = !row || row.scan_month !== currentMonth;
-
-  await supabase
-    .from("orgs")
-    .update({
-      scan_count_month: needsReset ? 1 : (row?.scan_count_month ?? 0) + 1,
-      scan_month: currentMonth,
-    })
-    .eq("id", orgId);
-}
-
-export async function updateOrgPlan(
-  orgId: string,
-  params: {
-    plan?: string;
-    paddleCustomerId?: string;
-    paddleSubscriptionId?: string;
-    subscriptionStatus?: string;
-  },
-): Promise<void> {
-  const update: Record<string, string> = {};
-  if (params.plan !== undefined) update.plan = params.plan;
-  if (params.paddleCustomerId !== undefined)
-    update.paddle_customer_id = params.paddleCustomerId;
-  if (params.paddleSubscriptionId !== undefined)
-    update.paddle_subscription_id = params.paddleSubscriptionId;
-  if (params.subscriptionStatus !== undefined)
-    update.subscription_status = params.subscriptionStatus;
-
-  const {error} = await supabase.from("orgs").update(update).eq("id", orgId);
-  if (error) throw new Error(`updateOrgPlan: ${error.message}`);
-}
-
-export async function getOrgByPaddleCustomer(
-  paddleCustomerId: string,
-): Promise<OrgRow | null> {
-  const {data} = await supabase
-    .from("orgs")
-    .select("*")
-    .eq("paddle_customer_id", paddleCustomerId)
-    .single();
-  return (data as OrgRow | null) ?? null;
-}
-
 export async function getRepoRow(
   repoId: string,
 ): Promise<{github_id: number; full_name: string; org_id: string | null; is_private: boolean} | null> {
@@ -586,21 +532,28 @@ export async function verifyRepoInstallation(
 
 // ─── Repo security context ────────────────────────────────────────────────────
 
-/** Returns the stored per-repo security context, or null if not yet discovered. */
-export async function getRepoSecurityContext(repoId: string): Promise<string | null> {
+export interface CachedSecurityContext {
+  context: string;
+  updatedAt: string | null;
+}
+
+/** Returns the stored per-repo security context + when it was last discovered, or null if not yet discovered. */
+export async function getRepoSecurityContext(repoId: string): Promise<CachedSecurityContext | null> {
   const {data} = await supabase
     .from("repos")
-    .select("security_context")
+    .select("security_context, security_context_updated_at")
     .eq("id", repoId)
     .single();
-  return (data as {security_context: string | null} | null)?.security_context ?? null;
+  const row = data as {security_context: string | null; security_context_updated_at: string | null} | null;
+  if (!row?.security_context) return null;
+  return {context: row.security_context, updatedAt: row.security_context_updated_at};
 }
 
 /** Persists the per-repo security context (discovered patterns + learned false-positive rules). */
 export async function saveRepoSecurityContext(repoId: string, context: string): Promise<void> {
   await supabase
     .from("repos")
-    .update({security_context: context})
+    .update({security_context: context, security_context_updated_at: new Date().toISOString()})
     .eq("id", repoId);
 }
 

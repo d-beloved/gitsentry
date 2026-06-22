@@ -1,4 +1,4 @@
-import { countBySeverity, sortBySeverity, hasMinSeverity } from "../scorer";
+import { countBySeverity, sortBySeverity } from "../scorer";
 
 const MIXED_ISSUES = [
   { severity: "critical" },
@@ -67,30 +67,5 @@ describe("sortBySeverity", () => {
     const sorted = sortBySeverity(issues);
     expect(sorted[0].id).toBe(1);
     expect(sorted[1].id).toBe(2);
-  });
-});
-
-describe("hasMinSeverity", () => {
-  test("returns true when an issue meets the exact threshold", () => {
-    expect(hasMinSeverity([{ severity: "high" }], "high")).toBe(true);
-  });
-
-  test("returns true when an issue exceeds the threshold (critical vs high)", () => {
-    expect(hasMinSeverity([{ severity: "critical" }], "high")).toBe(true);
-  });
-
-  test("returns false when all issues are below the threshold", () => {
-    expect(
-      hasMinSeverity([{ severity: "low" }, { severity: "medium" }], "high"),
-    ).toBe(false);
-  });
-
-  test("returns false for an empty array", () => {
-    expect(hasMinSeverity([], "low")).toBe(false);
-  });
-
-  test("works correctly for the critical threshold", () => {
-    expect(hasMinSeverity([{ severity: "high" }], "critical")).toBe(false);
-    expect(hasMinSeverity([{ severity: "critical" }], "critical")).toBe(true);
   });
 });

@@ -24,6 +24,7 @@ export interface RepoRow {
   is_private: boolean;
   is_active: boolean;
   security_context: string | null;
+  security_context_updated_at: string | null;
 }
 
 export interface ScanRow {
