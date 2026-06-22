@@ -20,6 +20,7 @@ import {
   updateScanCommentId,
   getRepoSecurityContext,
   saveRepoSecurityContext,
+  recordAiUsage,
 } from "../../db/queries";
 import { notifyIfNeeded } from "../notifier";
 import type { ScanJobData } from "../../../../../packages/scanner-contract/types";
@@ -99,12 +100,34 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
 
         const allPaths = [...new Set([...diffPaths, ...authFiles.map((f) => f.path)])];
 
-        [repoSecurityContext, classification] = await Promise.all([
+        const [discoveryResult, classifyResult] = await Promise.all([
           authFiles.length > 0
             ? discoverSecurityContext(authFiles, repoFullName)
-            : Promise.resolve(""),
+            : Promise.resolve(null),
           classifyProject(allPaths, repoFullName, manifestContent ?? undefined),
         ]);
+
+        repoSecurityContext = discoveryResult?.context ?? "";
+        classification = classifyResult.classification;
+
+        if (discoveryResult) {
+          recordAiUsage({
+            surface: "discovery",
+            model: discoveryResult.model,
+            tokensIn: discoveryResult.tokensIn,
+            tokensOut: discoveryResult.tokensOut,
+            scanId,
+            repoId,
+          }).catch((err: Error) => console.error("[worker] recordAiUsage(discovery) failed:", err.message));
+        }
+        recordAiUsage({
+          surface: "classifier",
+          model: classifyResult.model,
+          tokensIn: classifyResult.tokensIn,
+          tokensOut: classifyResult.tokensOut,
+          scanId,
+          repoId,
+        }).catch((err: Error) => console.error("[worker] recordAiUsage(classifier) failed:", err.message));
 
         if (repoSecurityContext) {
           saveRepoSecurityContext(repoId, repoSecurityContext).catch((err: Error) =>
@@ -118,7 +141,18 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       // Security context cached — still run the classifier (cheap, no file fetches)
       // so we always apply context-aware rules even on repeat scans.
       const diffPaths = extractPathsFromDiff(diff);
-      classification = await classifyProject(diffPaths, repoFullName).catch(() => undefined);
+      const classifyResult = await classifyProject(diffPaths, repoFullName).catch(() => undefined);
+      classification = classifyResult?.classification;
+      if (classifyResult) {
+        recordAiUsage({
+          surface: "classifier",
+          model: classifyResult.model,
+          tokensIn: classifyResult.tokensIn,
+          tokensOut: classifyResult.tokensOut,
+          scanId,
+          repoId,
+        }).catch((err: Error) => console.error("[worker] recordAiUsage(classifier) failed:", err.message));
+      }
     }
 
     if (classification) {
@@ -131,6 +165,15 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       ...context,
       repoSecurityContext,
     }, { classification });
+
+    recordAiUsage({
+      surface: "pr_scan",
+      model: model_name ?? "",
+      tokensIn: tokens_in ?? 0,
+      tokensOut: tokens_out ?? 0,
+      scanId,
+      repoId,
+    }).catch((err: Error) => console.error("[worker] recordAiUsage(pr_scan) failed:", err.message));
 
     const [findings, previousComment] = await Promise.all([
       issues.length > 0

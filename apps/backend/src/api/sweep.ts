@@ -11,6 +11,7 @@ import {
   refundSweepTrial,
   tryClaimMonthlySweep,
   refundMonthlySweep,
+  recordAiUsage,
 } from "../db/queries";
 import {truncateDiff} from "../lib/differ";
 
@@ -155,6 +156,15 @@ router.post(
       if (issues.length > 0) {
         findings = await saveFindings(scan.id, issues);
       }
+
+      recordAiUsage({
+        surface: "security_sweep",
+        model: model_name ?? "",
+        tokensIn: tokens_in,
+        tokensOut: tokens_out,
+        scanId: scan.id,
+        repoId,
+      }).catch((err: Error) => console.error("[sweep] recordAiUsage failed:", err.message));
 
       await updateScanStatus(scan.id, issues, Date.now() - startedAt, "complete", {
         tokensIn: tokens_in,

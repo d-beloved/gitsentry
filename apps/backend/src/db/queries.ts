@@ -195,6 +195,35 @@ export async function updateScanStatus(
   }
 }
 
+// ─── AI usage ledger ────────────────────────────────────────────────────────────
+// Records every AI provider call regardless of which feature made it, so the
+// finance dashboard can account for total spend rather than just the main
+// scan/sweep call. See docs/migrations/002_ai_usage_ledger.sql.
+
+export type AiUsageSurface = "pr_scan" | "security_sweep" | "discovery" | "classifier";
+
+export async function recordAiUsage(params: {
+  surface: AiUsageSurface;
+  model: string;
+  tokensIn: number;
+  tokensOut: number;
+  scanId?: string | null;
+  repoId?: string | null;
+}): Promise<void> {
+  if (params.tokensIn === 0 && params.tokensOut === 0) return;
+
+  const {error} = await supabase.from("ai_usage").insert({
+    surface: params.surface,
+    model: params.model,
+    tokens_in: params.tokensIn,
+    tokens_out: params.tokensOut,
+    scan_id: params.scanId ?? null,
+    repo_id: params.repoId ?? null,
+  });
+
+  if (error) console.error("[ai_usage] recordAiUsage failed:", error.message);
+}
+
 // ─── Findings ─────────────────────────────────────────────────────────────────
 
 export async function saveFindings(

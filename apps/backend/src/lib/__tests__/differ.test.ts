@@ -1,4 +1,10 @@
-import { parseDiffStats, truncateDiff, extractAdditions } from "../differ";
+import {
+  parseDiffStats,
+  truncateDiff,
+  extractAdditions,
+  extractScannablePaths,
+  hasScannableContent,
+} from "../differ";
 
 const SINGLE_FILE_DIFF = `\
 diff --git a/src/app.js b/src/app.js
@@ -120,6 +126,43 @@ describe("extractAdditions", () => {
   test("truncates output at maxBytes and appends marker", () => {
     const result = extractAdditions(MULTI_FILE_DIFF, 20);
     expect(result).toContain("[ADDITIONS TRUNCATED]");
+  });
+});
+
+describe("extractScannablePaths", () => {
+  test("returns [] for empty/null input", () => {
+    expect(extractScannablePaths("")).toEqual([]);
+    expect(extractScannablePaths(null)).toEqual([]);
+    expect(extractScannablePaths(undefined)).toEqual([]);
+  });
+
+  test("returns the non-skipped file paths from the diff", () => {
+    expect(extractScannablePaths(MULTI_FILE_DIFF).sort()).toEqual([
+      "src/app.js",
+      "src/auth.js",
+    ]);
+  });
+
+  test("excludes lock files", () => {
+    expect(extractScannablePaths(MIXED_DIFF)).toEqual(["src/app.js"]);
+    expect(extractScannablePaths(LOCK_FILE_DIFF)).toEqual([]);
+  });
+});
+
+describe("hasScannableContent", () => {
+  test("false for empty/null input", () => {
+    expect(hasScannableContent("")).toBe(false);
+    expect(hasScannableContent(null)).toBe(false);
+    expect(hasScannableContent(undefined)).toBe(false);
+  });
+
+  test("true when the diff has real code", () => {
+    expect(hasScannableContent(SINGLE_FILE_DIFF)).toBe(true);
+    expect(hasScannableContent(MIXED_DIFF)).toBe(true);
+  });
+
+  test("false for a lockfile-only diff", () => {
+    expect(hasScannableContent(LOCK_FILE_DIFF)).toBe(false);
   });
 });
 

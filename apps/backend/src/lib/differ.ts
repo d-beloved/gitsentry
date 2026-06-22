@@ -101,6 +101,70 @@ export function extractWithContext(
     : result;
 }
 
+/**
+ * Returns the file paths the scanner actually sees — non-skipped files that
+ * contain at least one added line (the same selection extractWithContext emits).
+ * Used to validate that AI findings reference a file present in the scanned diff,
+ * which guards against the model hallucinating findings for files not in the PR.
+ *
+ * Returns [] when the diff is empty or parse-diff fails. Callers must treat an
+ * empty result as "could not determine" and fail open (do not suppress findings).
+ */
+export function extractScannablePaths(
+  diffText: string | null | undefined,
+): string[] {
+  if (!diffText) return [];
+
+  const paths: string[] = [];
+  try {
+    const files = parseDiff(diffText);
+    for (const file of files) {
+      const filePath = file.to ?? file.from ?? "unknown";
+      if (SKIP_FILE_PATTERNS.some((p) => p.test(filePath))) continue;
+      const hasAdditions = file.chunks.some((chunk) =>
+        chunk.changes.some((c) => c.type === "add"),
+      );
+      if (!hasAdditions) continue;
+      paths.push(filePath);
+    }
+  } catch {
+    return [];
+  }
+
+  return [...new Set(paths)];
+}
+
+/**
+ * True when the diff contains at least one file worth scanning after stripping
+ * lockfiles, minified bundles, and other generated artifacts (SKIP_FILE_PATTERNS).
+ * A lockfile/generated-only PR yields empty scanner input, which the AI tends to
+ * fill with hallucinated findings — skip those scans entirely.
+ *
+ * Fails open: returns true when parse-diff chokes (extractWithContext falls back
+ * to the raw diff in that case) or when the diff lists no files at all.
+ */
+export function hasScannableContent(diffText: string | null | undefined): boolean {
+  if (!diffText) return false;
+
+  try {
+    const files = parseDiff(diffText);
+    let sawAnyFile = false;
+    for (const file of files) {
+      sawAnyFile = true;
+      const filePath = file.to ?? file.from ?? "unknown";
+      if (SKIP_FILE_PATTERNS.some((p) => p.test(filePath))) continue;
+      if (file.chunks.some((c) => c.changes.some((ch) => ch.type === "add"))) {
+        return true;
+      }
+    }
+    // Parsed cleanly: files present but all skipped → nothing to scan.
+    // No files at all is unusual — fail open rather than silently drop.
+    return !sawAnyFile;
+  } catch {
+    return true;
+  }
+}
+
 /** @deprecated Use extractWithContext instead — this loses surrounding auth checks. */
 export function extractAdditions(
   diffText: string | null | undefined,
