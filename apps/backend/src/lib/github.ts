@@ -442,27 +442,43 @@ export async function fetchRepoManifestFiles(
 
 // ─── Security context discovery ───────────────────────────────────────────────
 
-export const AUTH_FILE_CANDIDATES = [
-  ".gitsentry/context.md",
-  "middleware.ts",
-  "middleware.js",
-  "src/middleware.ts",
-  "lib/auth.ts",
-  "lib/auth.js",
-  "lib/auth/index.ts",
-  "src/lib/auth.ts",
-  "utils/auth.ts",
-  "src/utils/auth.ts",
-  "app/lib/auth.ts",
-  "app/middleware.ts",
-];
-
 const MAX_FILE_BYTES = 4_000;
+const MAX_AUTH_FILES = 10;
+const SOURCE_EXT = /\.(ts|tsx|js|jsx|py|rb|go|java|php|cs|rs|swift|kt)$/i;
 
 /**
- * Fetches key authentication/middleware files from a repo via the GitHub API.
- * Used to seed the per-repo security context on first scan.
- * Silently skips files that don't exist — most repos only have a subset.
+ * Returns true when a file path looks like it could contain authentication,
+ * authorization, or session management logic. Works across frameworks and
+ * naming conventions — no hardcoded path list required.
+ * Exported so securityContext.ts can use the same rule for cache invalidation.
+ */
+export function isAuthRelevantPath(filePath: string): boolean {
+  if (filePath === ".gitsentry/context.md") return true;
+  const basename = filePath.split("/").pop() ?? "";
+  if (!SOURCE_EXT.test(basename)) return false;
+
+  // Exact high-signal names
+  if (/^(auth|middleware|session|passport|guard|guards)\.(ts|tsx|js|jsx|py|rb|go|java|php|cs|rs|swift|kt)$/i.test(basename)) return true;
+
+  // auth- prefixed or -auth suffixed variants (auth-config.ts, use-auth.ts, etc.)
+  if (/^auth[-_.]/i.test(basename) || /[-_.]auth\./i.test(basename)) return true;
+
+  // Compound names: auth-config, auth-helper, auth-service, auth-utils, auth-middleware, auth-guard, auth-provider
+  if (/auth[-_](config|helper|utils|service|guard|middleware|provider|context|client)\./i.test(basename)) return true;
+
+  // Route files inside an /auth/ directory — catches NextAuth.js/Auth.js route handlers
+  if (/^route\.(ts|js|tsx|jsx)$/i.test(basename) && /\/auth\//i.test(filePath)) return true;
+
+  // NextAuth.js catch-all route pattern: [...nextauth].ts or [...nextauth]/route.ts
+  if (/\[\.\.\.nextauth\]/i.test(filePath)) return true;
+
+  return false;
+}
+
+/**
+ * Discovers authentication and middleware files by walking the repo's git tree,
+ * then fetches their content. Works regardless of the project's naming conventions
+ * or framework — no hardcoded path list required.
  */
 export async function fetchRepoAuthFiles(
   repoFullName: string,
@@ -472,15 +488,42 @@ export async function fetchRepoAuthFiles(
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
+  let pathsToFetch: string[];
+
+  try {
+    const { data: commit } = await octokit.request(
+      "GET /repos/{owner}/{repo}/commits/{ref}",
+      { owner, repo, ref: branch },
+    );
+    const treeSha = (commit.commit as { tree: { sha: string } }).tree.sha;
+
+    const { data: tree } = await octokit.request(
+      "GET /repos/{owner}/{repo}/git/trees/{tree_sha}",
+      { owner, repo, tree_sha: treeSha, recursive: "1" },
+    );
+
+    const items = (tree.tree as Array<{ path?: string; type?: string }>) ?? [];
+    pathsToFetch = items
+      .filter((item) => item.type === "blob" && item.path && isAuthRelevantPath(item.path))
+      .map((item) => item.path as string)
+      .sort((a, b) => a.split("/").length - b.split("/").length) // shallower paths first
+      .slice(0, MAX_AUTH_FILES);
+  } catch (err) {
+    console.warn("[github] fetchRepoAuthFiles tree walk failed:", (err as Error).message);
+    return [];
+  }
+
+  if (pathsToFetch.length === 0) return [];
+
   const results = await Promise.allSettled(
-    AUTH_FILE_CANDIDATES.map(async (path) => {
-      const {data} = await octokit.request(
+    pathsToFetch.map(async (path) => {
+      const { data } = await octokit.request(
         "GET /repos/{owner}/{repo}/contents/{path}",
-        {owner, repo, path, ref: branch},
+        { owner, repo, path, ref: branch },
       );
       if (data && "content" in data && typeof data.content === "string") {
         const content = Buffer.from(data.content, "base64").toString("utf8");
-        return {path, content: content.slice(0, MAX_FILE_BYTES)};
+        return { path, content: content.slice(0, MAX_FILE_BYTES) };
       }
       return null;
     }),
@@ -488,7 +531,7 @@ export async function fetchRepoAuthFiles(
 
   return results
     .filter(
-      (r): r is PromiseFulfilledResult<{path: string; content: string}> =>
+      (r): r is PromiseFulfilledResult<{ path: string; content: string }> =>
         r.status === "fulfilled" && r.value !== null,
     )
     .map((r) => r.value);

@@ -55,6 +55,39 @@ The prompt is tuned specifically for patterns produced by AI coding assistants �
 
 ---
 
+## Improving scan accuracy with `.gitsentry/context.md`
+
+Gitsentry automatically discovers your repo's auth patterns and tech stack on the first scan by walking the git tree and reading dependency manifests. For most projects this works without any configuration.
+
+Some setups can't be inferred from code alone:
+
+- **Cloud-hosted auth** — Clerk, Auth0, Firebase Auth, Supabase Auth, AWS Cognito, Okta. Your code calls their SDK; the actual auth logic lives in their cloud.
+- **Infrastructure-level controls** — auth or rate limiting enforced by an API gateway, reverse proxy, or sidecar that isn't in this repo.
+- **Narrowed input fields** — a parameter that's typed as `string` but in practice only ever receives values from a fixed internal enum, so standard taint analysis over-flags it.
+
+Create `.gitsentry/context.md` at the root of your repo to declare these facts explicitly:
+
+```md
+## Authentication
+Auth is handled by Clerk via @clerk/nextjs. Every route under /app is protected by
+Clerk's middleware. No local session management exists in this codebase.
+
+## Rate limiting
+Rate limiting is enforced at the AWS API Gateway layer — not in this service.
+
+## Trust boundaries
+This service is internal-only, always invoked by our orchestration layer which
+validates JWTs before forwarding requests. Direct public access is not possible.
+
+## Input constraints
+The `action` field in webhook payloads only ever contains values from a fixed internal
+enum defined by our event bus — it is never free-form user input.
+```
+
+The scanner extracts only factual claims from this file — any instructions or directives embedded in it are ignored. Facts declared here are treated as authoritative for controls that live outside the codebase, without suppressing findings for anything the diff itself contradicts or bypasses.
+
+---
+
 ## Rescan a PR
 
 Post `/gitsentry rescan` as a comment on any open PR to trigger a fresh scan on the current HEAD commit. Only repo collaborators, members, and owners can trigger rescans. The existing Gitsentry comment is updated in place rather than a new one being posted.

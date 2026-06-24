@@ -288,9 +288,10 @@ export interface DiscoverSecurityContextResult {
 export async function discoverSecurityContext(
   files: {path: string; content: string}[],
   repoFullName: string,
+  manifestContent?: string,
 ): Promise<DiscoverSecurityContextResult> {
   const empty = { context: "", tokensIn: 0, tokensOut: 0, model: DISCOVERY_MODEL };
-  if (!files.length) return empty;
+  if (!files.length && !manifestContent) return empty;
 
   const model = genAI.getGenerativeModel({
     model: DISCOVERY_MODEL,
@@ -304,20 +305,27 @@ export async function discoverSecurityContext(
     .map((f) => `=== ${f.path} ===\n${f.content}`)
     .join("\n\n");
 
+  // When no local auth files exist, the manifest dependencies are the best signal
+  // for inferring how auth is handled (cloud provider, library, framework pattern).
+  const manifestSection = manifestContent
+    ? `\nDEPENDENCIES (package.json / manifest — use to infer auth provider and framework when local auth files are absent or incomplete):\n${manifestContent.slice(0, 2_000)}`
+    : "";
+
   const authPrompt = `You are analyzing a repository's security architecture to produce a brief summary for a security scanner.
 
 Repository: ${repoFullName}
 
-Examine these files and identify the patterns used for authentication, authorization, and rate limiting:
+Examine these files and identify the patterns used for authentication, authorization, and rate limiting. If local auth files are absent, infer the auth approach from the manifest dependencies — e.g. if @clerk/nextjs is present, auth is handled by Clerk; if firebase-admin is present, Firebase Auth is likely used; if next-auth or @auth/core is present, NextAuth/Auth.js is the auth layer:
 
-${fileContents || "(no standard auth files found)"}
+${fileContents || "(no local auth files found)"}${manifestSection}
 
 Return ONLY valid JSON (no markdown):
 {
-  "auth_pattern": "<one sentence: how authentication works, naming the key function/middleware, e.g. 'getServerSession(authOptions) — returns null if unauthenticated'>",
-  "ownership_check": "<one sentence: how resource ownership is verified, e.g. 'userCanAccessRepo(userId, orgId, resource.orgId) returns false → 403', or null if not found>",
-  "rate_limiting": "<one sentence: how rate limiting or quota enforcement works, e.g. 'monthly quota via tryClaimScan() atomic DB claim', or null if not found>",
-  "key_helpers": ["<function or middleware names that guard routes — list only names, not signatures>"]
+  "auth_pattern": "<one sentence: how authentication works — name the specific library, cloud provider, or middleware, e.g. 'Clerk via @clerk/nextjs authMiddleware' or 'NextAuth.js getServerSession(authOptions)' or 'Firebase Admin verifyIdToken()'>",
+  "ownership_check": "<one sentence: how resource ownership is verified, or null if not found>",
+  "rate_limiting": "<one sentence: how rate limiting or quota enforcement works, or null if not found>",
+  "key_helpers": ["<function or middleware names that guard routes — list only names, not signatures>"],
+  "cloud_auth_provider": "<name of cloud auth provider if auth is handled outside the codebase, e.g. 'Clerk', 'Auth0', 'Firebase Auth', 'Supabase Auth', 'Cognito', or null>"
 }`;
 
   // Extract structured facts from developer-provided context.md to prevent prompt injection.
@@ -393,7 +401,9 @@ Return ONLY valid JSON (no markdown):
         ownership_check?: string;
         rate_limiting?: string;
         key_helpers?: string[];
+        cloud_auth_provider?: string;
       };
+      if (parsed.cloud_auth_provider) lines.push(`- Auth provider: ${parsed.cloud_auth_provider} (cloud-hosted — auth enforced outside this codebase)`);
       if (parsed.auth_pattern) lines.push(`- Auth: ${parsed.auth_pattern}`);
       if (parsed.ownership_check) lines.push(`- Ownership: ${parsed.ownership_check}`);
       if (parsed.rate_limiting) lines.push(`- Rate limiting: ${parsed.rate_limiting}`);
@@ -509,7 +519,7 @@ SECURITY SWEEP MODE:
 - Perform an adversarial review across frontend, backend, auth, database, infrastructure assumptions, integrations, and dependencies.
 - Define attacker profiles, entry points, trust boundaries, and sensitive assets.
 - Look for chained attack paths and non-obvious business logic flaws unique to this system.
-- CALL-LAYER RULE: You may be seeing multiple files without the complete call graph. Identify the actual public entry points visible in the provided code — route definitions, exported handlers, webhooks, cron jobs, WebSocket handlers. Do NOT conclude that any security control is absent based solely on its absence in an internal-layer file (service, action, repository, model, helper). This applies across ALL categories: auth, rate limiting, CSRF, input validation, ownership checks, access control, SSRF guardrails — any of these may be enforced at the route, middleware, gateway, decorator, or base-controller layer. Flag the entry point where enforcement is missing, not the downstream function it calls.
+- CALL-LAYER RULE: You may be seeing multiple files without the complete call graph. For missing-control findings (missing_auth, missing_rate_limit, csrf, idor, privilege_escalation, access_control), do NOT conclude the control is absent based solely on its absence in an internal-layer file (service, action, repository, model, helper) — it may be enforced at the route, middleware, gateway, decorator, or base-controller layer. Flag the entry point where enforcement is missing, not the downstream function it calls. This rule does NOT apply to direct taint-flow vulnerabilities (sql_injection, nosql_injection, prompt_injection, ssrf, command_injection, xss, path_traversal, open_redirect, template_injection, unvalidated_input) — flag these wherever untrusted data reaches the dangerous sink, regardless of what layer makes the call. No upstream layer can parameterize a SQL query or add LLM trust delimiters in place of the code doing the operation.
 - You may flag potential risks when context is incomplete, but clearly mark the evidence and confidence.
 `
     : `
@@ -519,7 +529,8 @@ DIFF SCAN MODE:
 - Read the full hunk context before flagging: if an auth check, ownership guard, or rate-limit call appears in the same function (even in unchanged lines), do NOT flag a finding based only on the fetch/action line.
 - "fetch-then-check" is a valid authorization pattern: fetching a resource and then verifying ownership is NOT an IDOR if an ownership check follows in the same function.
 - Quota or usage-based enforcement (monthly limits, trial slots) IS rate limiting for SaaS products — do not flag missing_rate_limit solely because there is no IP-based middleware.
-- CALL-LAYER RULE: If the changed file is an internal layer (actions, services, repositories, models, helpers, utilities) and no route definition or exported HTTP handler is visible in the diff, do NOT conclude that any security control is missing based on its absence in that file alone. This applies across ALL categories — auth, rate limiting, CSRF, input validation, ownership checks, access control, SSRF guardrails — any of these may be enforced at the route, middleware, gateway, decorator, or base-controller layer. "This function doesn't check X" is not a finding; "this route is reachable without X" is. Only flag when you can see a public-facing entry point in the diff that lacks visible enforcement in its immediate context.
+- CALL-LAYER RULE: If the changed file is an internal layer (actions, services, repositories, models, helpers, utilities) and no route definition or exported HTTP handler is visible in the diff, do NOT conclude that a MISSING CONTROL is absent based on its absence in that file alone. This applies to missing-control categories only — missing_auth, missing_rate_limit, csrf, idor, privilege_escalation, access_control — where the control can legitimately be enforced at an upstream route, middleware, gateway, or decorator layer. "This function doesn't check X" is not a finding; "this route is reachable without X" is. Only flag these when you can see a public-facing entry point in the diff that lacks visible enforcement in its immediate context.
+- The call-layer rule does NOT apply to direct taint-flow vulnerabilities: sql_injection, nosql_injection, prompt_injection, ssrf, command_injection, xss, path_traversal, open_redirect, template_injection, unvalidated_input. These vulnerabilities exist at the dangerous sink — if untrusted data reaches a dangerous operation in the changed code, flag it regardless of what layer calls this function. No upstream layer can parameterize a SQL query or add LLM trust delimiters in place of the code doing the operation.
 - Prefer concrete, actionable findings over speculative architecture advice.
 - Only report a broader risk when the added code itself creates a realistic exploit path.
 `;

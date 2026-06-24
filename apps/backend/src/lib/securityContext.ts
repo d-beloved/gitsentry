@@ -1,5 +1,5 @@
 import { discoverSecurityContext, classifyProject } from "./ai";
-import { fetchRepoAuthFiles, fetchRepoManifestFiles, AUTH_FILE_CANDIDATES } from "./github";
+import { fetchRepoAuthFiles, fetchRepoManifestFiles, isAuthRelevantPath } from "./github";
 import {
   getRepoSecurityContext,
   saveRepoSecurityContext,
@@ -10,7 +10,6 @@ import { extractPathsFromDiff } from "../../../../packages/scanner-contract/clas
 import type { ProjectClassification } from "../../../../packages/scanner-contract/scanner-rules";
 
 const DEFAULT_TTL_DAYS = 90;
-const AUTH_FILE_SET = new Set(AUTH_FILE_CANDIDATES);
 
 function getTtlDays(): number {
   const raw = process.env.DISCOVERY_CACHE_TTL_DAYS;
@@ -27,7 +26,7 @@ function isStale(updatedAt: string | null, ttlDays: number): boolean {
 }
 
 function touchesAuthFiles(diffPaths: string[]): boolean {
-  return diffPaths.some((p) => AUTH_FILE_SET.has(p));
+  return diffPaths.some((p) => isAuthRelevantPath(p));
 }
 
 /**
@@ -112,7 +111,9 @@ export async function resolveSecurityContext(params: {
     const allPaths = [...new Set([...diffPaths, ...authFiles.map((f) => f.path)])];
 
     const [discoveryResult, classifyResult] = await Promise.all([
-      authFiles.length > 0 ? discoverSecurityContext(authFiles, repoFullName) : Promise.resolve(null),
+      authFiles.length > 0 || manifestContent
+        ? discoverSecurityContext(authFiles, repoFullName, manifestContent ?? undefined)
+        : Promise.resolve(null),
       classifyProject(allPaths, repoFullName, manifestContent ?? undefined),
     ]);
 
