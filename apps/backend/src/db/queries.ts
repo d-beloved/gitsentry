@@ -272,6 +272,35 @@ export async function saveFindings(
   }));
 }
 
+/** Returns the findings count of the last completed scan for a PR, or null if none exists yet. */
+export async function getLastPRScanResult(
+  repoFullName: string,
+  prNumber: number,
+): Promise<{findingsCount: number} | null> {
+  const {data: repo} = await supabase
+    .from("repos")
+    .select("id")
+    .eq("full_name", repoFullName)
+    .single();
+
+  if (!repo) return null;
+
+  const {data} = await supabase
+    .from("scans")
+    .select("findings_count")
+    .eq("repo_id", (repo as {id: string}).id)
+    .eq("trigger_type", "pull_request")
+    .eq("trigger_ref", String(prNumber))
+    .eq("status", "complete")
+    .order("created_at", {ascending: false})
+    .limit(1)
+    .single();
+
+  const row = data as {findings_count: number | null} | null;
+  if (!row) return null;
+  return {findingsCount: row.findings_count ?? 0};
+}
+
 /** Returns the comment ID and whether the previous scan had findings, or null if no prior comment exists. */
 export async function getPreviousPRCommentId(
   repoId: string,

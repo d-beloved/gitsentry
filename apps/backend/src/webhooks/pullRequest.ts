@@ -1,7 +1,11 @@
-import { getDiff, postBotPRSkipComment } from "../lib/github";
-import { saveScan, getOrgByInstallationId, scanExistsForCommit } from "../db/queries";
+import { getDiff, getIncrementalDiff, postBotPRSkipComment, postSyncSkipComment } from "../lib/github";
+import { saveScan, getOrgByInstallationId, scanExistsForCommit, getLastPRScanResult } from "../db/queries";
 import { parseDiffStats, truncateDiff, hasScannableContent } from "../lib/differ";
 import { dispatchScan } from "../lib/queue";
+
+// Starter plan: skip re-scan on synchronize if the last scan was clean and the
+// incremental diff is below this line threshold (covers minor fixup commits).
+const STARTER_CLEAN_RESCAN_THRESHOLD = 25;
 
 // Dependency-update bots only bump manifests/lockfiles — there is no application
 // code to analyze, and feeding the model a near-empty diff produced hallucinated
@@ -72,7 +76,7 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     return;
   }
 
-  if (action === "synchronize" && (!org || org.plan !== "pro")) {
+  if (action === "synchronize" && (!org || org.plan === "free")) {
     console.log(`[PR] Skipping synchronize for ${repo.full_name} — ${org?.plan ?? "free"} plan`);
     return;
   }
@@ -90,7 +94,50 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     return;
   }
 
-  const diff = await getDiff(repo.full_name as string, pr.number as number, installationId);
+  let diff: string;
+  if (action === "synchronize") {
+    const beforeSha = payload.before as string | undefined;
+    if (beforeSha) {
+      try {
+        diff = await getIncrementalDiff(
+          repo.full_name as string,
+          beforeSha,
+          prHead.sha as string,
+          installationId,
+        );
+      } catch {
+        diff = await getDiff(repo.full_name as string, pr.number as number, installationId);
+      }
+    } else {
+      diff = await getDiff(repo.full_name as string, pr.number as number, installationId);
+    }
+
+    // Starter only: skip when the incremental delta is tiny and the last scan was clean.
+    if (org?.plan === "starter") {
+      const {linesAdded} = parseDiffStats(diff);
+      if (linesAdded < STARTER_CLEAN_RESCAN_THRESHOLD) {
+        const lastScan = await getLastPRScanResult(
+          repo.full_name as string,
+          pr.number as number,
+        );
+        if (lastScan && lastScan.findingsCount === 0) {
+          console.log(
+            `[PR] Skipping small clean-PR update for ${repo.full_name}#${pr.number} — starter plan, ${linesAdded} lines added, last scan clean`,
+          );
+          postSyncSkipComment(
+            repo.full_name as string,
+            pr.number as number,
+            linesAdded,
+            installationId,
+          ).catch((err: Error) => console.error("[PR] postSyncSkipComment failed:", err.message));
+          return;
+        }
+      }
+    }
+  } else {
+    diff = await getDiff(repo.full_name as string, pr.number as number, installationId);
+  }
+
   if (!diff || diff.length < 10) return;
 
   // Skip lockfile/generated-only diffs — there is nothing scannable left after

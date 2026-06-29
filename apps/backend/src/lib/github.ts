@@ -55,6 +55,28 @@ export async function getDiff(
   return response.data as unknown as string;
 }
 
+export async function getIncrementalDiff(
+  repoFullName: string,
+  baseSha: string,
+  headSha: string,
+  installationId: number,
+): Promise<string> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  const response = await octokit.request(
+    "GET /repos/{owner}/{repo}/compare/{basehead}",
+    {
+      owner,
+      repo,
+      basehead: `${baseSha}...${headSha}`,
+      headers: {accept: "application/vnd.github.v3.diff"},
+    },
+  );
+
+  return response.data as unknown as string;
+}
+
 export async function getPushDiff(
   repoFullName: string,
   commitSha: string,
@@ -332,6 +354,32 @@ export async function setupBranchProtection(
       },
     );
   }
+}
+
+export async function postSyncSkipComment(
+  repoFullName: string,
+  prNumber: number,
+  linesAdded: number,
+  installationId: number,
+): Promise<void> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  const lineWord = linesAdded === 1 ? "line" : "lines";
+  const body = [
+    `## 🔐 ${PRODUCT_NAME} — Update Skipped`,
+    "",
+    `Last scan found **no issues** ✅ · this push added only **${linesAdded} ${lineWord}** of new code. Re-scan skipped to protect your monthly quota.`,
+    "",
+    `Comment \`/gitsentry rescan\` to scan this update manually.`,
+    "",
+    `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})_`,
+  ].join("\n");
+
+  await octokit.request(
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    {owner, repo, issue_number: prNumber, body},
+  );
 }
 
 export async function postBotPRSkipComment(
