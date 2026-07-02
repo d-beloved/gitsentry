@@ -30,6 +30,20 @@ function isDependencyBot(login: string | undefined): boolean {
   );
 }
 
+// Release automation bots open version-bump / changelog PRs — no application
+// code to scan. Skip on every plan to avoid burning scan credits.
+const RELEASE_BOT_LOGINS = new Set([
+  "release-please[bot]",
+  "semantic-release-bot",
+  "changesets-release[bot]",
+]);
+
+function isReleaseBot(login: string | undefined): boolean {
+  if (!login) return false;
+  const l = login.toLowerCase();
+  return RELEASE_BOT_LOGINS.has(l) || l.startsWith("release-please");
+}
+
 export async function handlePR(payload: Record<string, unknown>): Promise<void> {
   const action = payload.action as string;
   const pr = payload.pull_request as Record<string, unknown>;
@@ -54,6 +68,15 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
   if (isDependencyBot(prLogin)) {
     console.log(
       `[PR] Skipping dependency bot PR ${repo.full_name}#${pr.number} (author: ${prLogin})`,
+    );
+    return;
+  }
+
+  // Release automation bots (release-please, semantic-release, etc.) only bump
+  // versions and update changelogs — skip on all plans.
+  if (isReleaseBot(prLogin)) {
+    console.log(
+      `[PR] Skipping release bot PR ${repo.full_name}#${pr.number} (author: ${prLogin})`,
     );
     return;
   }
