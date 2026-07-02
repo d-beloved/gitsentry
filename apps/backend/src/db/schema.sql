@@ -310,3 +310,16 @@ BEGIN
   END IF;
 END;
 $$;
+
+-- Returns lifetime scan totals per org, used by the admin dashboard.
+-- Accepts an array of org UUIDs and returns one row per org that has repos.
+CREATE OR REPLACE FUNCTION get_org_lifetime_scans(p_org_ids UUID[])
+RETURNS TABLE(org_id UUID, total BIGINT)
+LANGUAGE sql STABLE SECURITY DEFINER
+AS $$
+  SELECT r.org_id, COUNT(s.id)::BIGINT AS total
+    FROM repos r
+    LEFT JOIN scans s ON s.repo_id = r.id
+   WHERE r.org_id = ANY(p_org_ids)
+   GROUP BY r.org_id;
+$$;
