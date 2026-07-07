@@ -99,7 +99,7 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       );
     }
 
-    const { issues, summary, tokens_in, tokens_out, model_name } = await analyzeCode(diff, {
+    const { issues, summary, tokens_in, tokens_out, model_name, coverage } = await analyzeCode(diff, {
       ...context,
       repoSecurityContext,
     }, { classification });
@@ -127,7 +127,7 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       const skipCleanUpdate = issues.length === 0 && !!existingCommentId && !previousComment?.hadFindings;
       if (!skipCleanUpdate) {
         const commentId = await withTimeout(
-          postPRReview(repoFullName, prNumber, findings, summary, scanId, installationId, existingCommentId),
+          postPRReview(repoFullName, prNumber, findings, summary, scanId, installationId, existingCommentId, coverage),
           30_000,
           "postPRReview",
         );

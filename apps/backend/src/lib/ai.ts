@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
-import { extractWithContext, extractScannablePaths } from "./differ";
-import type { AIAnalysisResult, ScanContext } from "../../../../packages/scanner-contract/types";
+import { extractScannerInput, extractScannablePaths } from "./differ";
+import type { AIAnalysisResult, ScanContext, ScanCoverage } from "../../../../packages/scanner-contract/types";
 import type { ProjectClassification } from "../../../../packages/scanner-contract/scanner-rules";
 import { PROJECT_TYPE_RULES, isTestScaffolding } from "../../../../packages/scanner-contract/scanner-rules";
 import { buildClassifierPrompt, parseClassificationResponse } from "../../../../packages/scanner-contract/classifier";
@@ -287,7 +287,20 @@ export async function analyzeCode(
       responseSchema: ANALYSIS_RESPONSE_SCHEMA,
     },
   });
-  const input = mode === "diff_scan" ? extractWithContext(diff) : diff;
+  let input: string;
+  let coverage: ScanCoverage | undefined;
+  if (mode === "diff_scan") {
+    const extracted = extractScannerInput(diff);
+    input = extracted.text;
+    coverage = extracted.coverage;
+    if (coverage.truncated) {
+      console.warn(
+        `[ai] Diff over size budget for ${context.repo} — scanned ${coverage.filesScanned}/${coverage.filesTotal} changed files`,
+      );
+    }
+  } else {
+    input = diff;
+  }
   const prompt = buildPrompt(input, context, mode, classification);
 
   const AI_TIMEOUT_MS = 120_000;
@@ -345,6 +358,7 @@ export async function analyzeCode(
       issues,
       summary: parsed.summary || "Analysis complete.",
       scan_mode: mode,
+      coverage,
       tokens_in: tokensIn,
       tokens_out: tokensOut,
       model_name: modelName,
@@ -564,7 +578,7 @@ function buildPrompt(input: string, context: ScanContext, mode: string, classifi
   const isSweep = mode === "security_sweep";
   const inputLabel = isSweep
     ? "CODEBASE, DESIGN NOTES, OR SELECTED CONTEXT TO AUDIT"
-    : "DIFF WITH CONTEXT (+ = added line, spaces = unchanged context — format: [+| ] L<num>: <code>)";
+    : "DIFF WITH CONTEXT (+ = added line, - = line REMOVED by this PR (labelled with its old line number), spaces = unchanged context — format: [+|-| ] L<num>: <code>)";
 
   const repoContextSection = context.repoSecurityContext
     ? `\nREPO SECURITY CONTEXT (auto-discovered from this codebase, plus any developer-provided facts):
@@ -619,8 +633,9 @@ SECURITY SWEEP MODE:
 `
     : `
 DIFF SCAN MODE:
-- You are seeing added lines (+) and surrounding unchanged context lines (spaces) from this PR.
+- You are seeing added lines (+), removed lines (-), and surrounding unchanged context lines (spaces) from this PR.
 - Focus on vulnerabilities introduced by the added lines.
+- REMOVED SECURITY CONTROLS: lines prefixed "-" were deleted by this PR. If a deletion removes an auth check, ownership check, input validation, sanitization/escaping call, rate limit, CSRF protection, or security header while the surrounding code path clearly remains reachable, flag it under the category of the now-missing control. Anchor the finding to the nearest remaining line (use its L<num>), quote the removed line in the evidence, and state that this PR removed it. Do NOT flag deletions where the whole feature/route is being removed alongside its guard.
 - Read the full hunk context before flagging: if an auth check, ownership guard, or rate-limit call appears in the same function (even in unchanged lines), do NOT flag a finding based only on the fetch/action line.
 - "fetch-then-check" is a valid authorization pattern: fetching a resource and then verifying ownership is NOT an IDOR if an ownership check follows in the same function.
 - Quota or usage-based enforcement (monthly limits, trial slots) IS rate limiting for SaaS products — do not flag missing_rate_limit solely because there is no IP-based middleware.

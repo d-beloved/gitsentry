@@ -73,10 +73,18 @@ export interface Finding {
   created_at?: string;
 }
 
+/** How much of the changed diff the scanner actually saw after size budgeting. */
+export interface ScanCoverage {
+  filesTotal: number;
+  filesScanned: number;
+  truncated: boolean;
+}
+
 export interface AIAnalysisResult {
   issues: Finding[];
   summary: string;
   scan_mode?: ScanMode;
+  coverage?: ScanCoverage;
   tokens_in?: number;
   tokens_out?: number;
   model_name?: string;

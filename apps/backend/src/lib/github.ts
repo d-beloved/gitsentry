@@ -4,7 +4,7 @@ import {
   SEVERITY_EMOJI,
   CATEGORY_LABELS,
 } from "../../../../packages/scanner-contract/constants";
-import type {Finding} from "../../../../packages/scanner-contract/types";
+import type {Finding, ScanCoverage} from "../../../../packages/scanner-contract/types";
 
 let _app: App | undefined;
 
@@ -106,11 +106,12 @@ export async function postPRReview(
   scanId: string,
   installationId: number,
   existingCommentId?: number | null,
+  coverage?: ScanCoverage,
 ): Promise<number> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const body = formatReviewBody(issues, summary, scanId, !!existingCommentId);
+  const body = formatReviewBody(issues, summary, scanId, !!existingCommentId, coverage);
 
   if (existingCommentId) {
     const {data} = await octokit.request(
@@ -166,19 +167,30 @@ function formatFooter(summary: string, scanId: string, isUpdate: boolean): strin
   return footer;
 }
 
+function formatCoverageNote(coverage?: ScanCoverage): string {
+  if (!coverage?.truncated) return "";
+  if (coverage.filesScanned < coverage.filesTotal) {
+    return `> ⚠️ **Partial scan** — this PR exceeded the diff size budget. Scanned ${coverage.filesScanned} of ${coverage.filesTotal} changed files (docs/style files are dropped first).\n\n`;
+  }
+  return `> ⚠️ Large PR — surrounding context lines were reduced to fit the diff size budget. All ${coverage.filesTotal} changed files were scanned.\n\n`;
+}
+
 function formatReviewBody(
   issues: Finding[],
   summary: string,
   scanId: string,
   isUpdate = false,
+  coverage?: ScanCoverage,
 ): string {
   let body = `## 🔐 ${PRODUCT_NAME} Security Scan\n\n`;
 
   if (issues.length === 0) {
+    body += formatCoverageNote(coverage);
     body += `**No security issues found** in this PR. ✅\n\n`;
     body += formatFooter(summary, scanId, isUpdate);
     return body;
   }
+  body += formatCoverageNote(coverage);
 
   const sorted = sortBySeverity(issues);
   const counts = countBySeverity(issues);
