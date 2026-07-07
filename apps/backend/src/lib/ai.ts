@@ -1,4 +1,4 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
 import { extractWithContext, extractScannablePaths } from "./differ";
 import type { AIAnalysisResult, ScanContext } from "../../../../packages/scanner-contract/types";
 import type { ProjectClassification } from "../../../../packages/scanner-contract/scanner-rules";
@@ -132,6 +132,89 @@ const ADVERSARIAL_CATEGORIES: [string, string][] = [
 
 const ALL_CATEGORIES = [...CORE_CATEGORIES, ...ADVERSARIAL_CATEGORIES];
 
+const SEVERITY_VALUES = ["critical", "high", "medium", "low"];
+const CONFIDENCE_VALUES = ["high", "medium", "low"];
+
+// Structured-output schema for scan responses. Gemini's responseSchema
+// guarantees syntactically valid JSON matching this shape, which removes the
+// regex-extraction/parse-failure path entirely and constrains enums so the
+// model cannot invent severities or categories.
+const ANALYSIS_RESPONSE_SCHEMA: ResponseSchema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    issues: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          severity: { type: SchemaType.STRING, format: "enum", enum: SEVERITY_VALUES },
+          category: {
+            type: SchemaType.STRING,
+            format: "enum",
+            enum: ALL_CATEGORIES.map(([key]) => key),
+          },
+          file_path: { type: SchemaType.STRING },
+          line_number: { type: SchemaType.INTEGER, nullable: true },
+          code_snippet: { type: SchemaType.STRING },
+          description: { type: SchemaType.STRING },
+          fix_suggestion: { type: SchemaType.STRING },
+          affected_component: { type: SchemaType.STRING },
+          exploitation_scenario: { type: SchemaType.STRING },
+          impact: { type: SchemaType.STRING },
+          evidence: { type: SchemaType.STRING },
+          confidence: { type: SchemaType.STRING, format: "enum", enum: CONFIDENCE_VALUES },
+          attacker_profile: { type: SchemaType.STRING },
+        },
+        required: [
+          "severity",
+          "category",
+          "file_path",
+          "code_snippet",
+          "description",
+          "fix_suggestion",
+          "confidence",
+        ],
+      },
+    },
+    summary: { type: SchemaType.STRING },
+    threat_model: {
+      type: SchemaType.OBJECT,
+      properties: {
+        attacker_profiles: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        entry_points: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        trust_boundaries: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        sensitive_assets: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+      },
+    },
+    attack_chains: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          title: { type: SchemaType.STRING },
+          severity: { type: SchemaType.STRING, format: "enum", enum: SEVERITY_VALUES },
+          steps: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+          impact: { type: SchemaType.STRING },
+          recommended_fix: { type: SchemaType.STRING },
+        },
+        required: ["title", "severity", "steps", "impact"],
+      },
+    },
+    recommendations: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+  },
+  required: ["issues", "summary"],
+};
+
+/** Thrown when the model response cannot be parsed. The scan worker treats
+ * this as a scan FAILURE (retryable via Bull) rather than a clean result —
+ * a parse failure must never be reported to the user as "no issues found". */
+export class AIResponseParseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AIResponseParseError";
+  }
+}
+
 /**
  * Stage 1 — classify a repository's project type so the scanner can apply
  * context-aware rules. Runs as a lightweight Gemini call using the same
@@ -199,7 +282,10 @@ export async function analyzeCode(
   const modelName = mode === "security_sweep" ? SWEEP_MODEL : SCAN_MODEL;
   const model = genAI.getGenerativeModel({
     model: modelName,
-    generationConfig: {responseMimeType: "application/json"},
+    generationConfig: {
+      responseMimeType: "application/json",
+      responseSchema: ANALYSIS_RESPONSE_SCHEMA,
+    },
   });
   const input = mode === "diff_scan" ? extractWithContext(diff) : diff;
   const prompt = buildPrompt(input, context, mode, classification);
@@ -215,11 +301,23 @@ export async function analyzeCode(
   const tokensIn  = usage?.promptTokenCount     ?? 0;
   const tokensOut = usage?.candidatesTokenCount ?? 0;
 
+  // responseSchema makes the output valid JSON in practice, but keep the
+  // brace-extraction fallback for defence in depth. A response that still
+  // fails to parse is a scan FAILURE — throwing lets the worker mark the
+  // scan failed and Bull retry, instead of reporting a clean scan.
+  let parsed: AIAnalysisResult;
   try {
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     const cleanJson = jsonMatch ? jsonMatch[0] : text;
+    parsed = JSON.parse(cleanJson) as AIAnalysisResult;
+  } catch (e) {
+    console.error("[ai] Response parse error:", e);
+    throw new AIResponseParseError(
+      `Could not parse ${modelName} response as JSON (${(e as Error).message})`,
+    );
+  }
 
-    const parsed = JSON.parse(cleanJson) as AIAnalysisResult;
+  {
     const rawIssues = Array.isArray(parsed.issues) ? parsed.issues : [];
 
     // Hallucination guard (diff_scan only): drop findings whose file_path is not
@@ -254,9 +352,6 @@ export async function analyzeCode(
       attack_chains: Array.isArray(parsed.attack_chains) ? parsed.attack_chains : [],
       recommendations: Array.isArray(parsed.recommendations) ? parsed.recommendations : [],
     };
-  } catch (e) {
-    console.error("[ai] Response parse error:", e);
-    return { issues: [], summary: "Analysis failed — could not parse response.", tokens_in: tokensIn, tokens_out: tokensOut, model_name: modelName };
   }
 }
 
