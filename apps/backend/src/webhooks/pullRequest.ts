@@ -1,48 +1,12 @@
 import { getDiff, getIncrementalDiff, postBotPRSkipComment, postSyncSkipComment } from "../lib/github";
 import { saveScan, getOrgByInstallationId, scanExistsForCommit, getLastPRScanResult } from "../db/queries";
 import { parseDiffStats, truncateDiff, hasScannableContent } from "../lib/differ";
+import { isDependencyBot, isReleaseAutomationPR } from "../lib/botDetection";
 import { dispatchScan } from "../lib/queue";
 
 // Starter plan: skip re-scan on synchronize if the last scan was clean and the
 // incremental diff is below this line threshold (covers minor fixup commits).
 const STARTER_CLEAN_RESCAN_THRESHOLD = 25;
-
-// Dependency-update bots only bump manifests/lockfiles — there is no application
-// code to analyze, and feeding the model a near-empty diff produced hallucinated
-// findings. Skip them on every plan. Manual `/gitsentry scan` still works.
-const DEPENDENCY_BOT_LOGINS = new Set([
-  "dependabot[bot]",
-  "dependabot-preview[bot]",
-  "renovate[bot]",
-  "renovatebot",
-  "snyk-bot",
-  "pyup-bot",
-  "greenkeeper[bot]",
-]);
-
-function isDependencyBot(login: string | undefined): boolean {
-  if (!login) return false;
-  const l = login.toLowerCase();
-  return (
-    DEPENDENCY_BOT_LOGINS.has(l) ||
-    l.startsWith("dependabot") ||
-    l.startsWith("renovate")
-  );
-}
-
-// Release automation bots open version-bump / changelog PRs — no application
-// code to scan. Skip on every plan to avoid burning scan credits.
-const RELEASE_BOT_LOGINS = new Set([
-  "release-please[bot]",
-  "semantic-release-bot",
-  "changesets-release[bot]",
-]);
-
-function isReleaseBot(login: string | undefined): boolean {
-  if (!login) return false;
-  const l = login.toLowerCase();
-  return RELEASE_BOT_LOGINS.has(l) || l.startsWith("release-please");
-}
 
 export async function handlePR(payload: Record<string, unknown>): Promise<void> {
   const action = payload.action as string;
@@ -72,11 +36,21 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     return;
   }
 
-  // Release automation bots (release-please, semantic-release, etc.) only bump
-  // versions and update changelogs — skip on all plans.
-  if (isReleaseBot(prLogin)) {
+  // Release automation PRs (release-please, changesets, semantic-release) only
+  // bump versions and update changelogs — skip on all plans. Detected by author
+  // login, head branch, AND bot-authored release titles: when these tools run as
+  // a GitHub Actions workflow, the PR author is "github-actions[bot]", so the
+  // login check alone misses them.
+  if (
+    isReleaseAutomationPR({
+      login: prLogin,
+      isBotAuthor: isBot,
+      headRef: prHead.ref as string | undefined,
+      title: pr.title as string | undefined,
+    })
+  ) {
     console.log(
-      `[PR] Skipping release bot PR ${repo.full_name}#${pr.number} (author: ${prLogin})`,
+      `[PR] Skipping release automation PR ${repo.full_name}#${pr.number} (author: ${prLogin}, branch: ${prHead.ref})`,
     );
     return;
   }
