@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
 import { extractScannerInput, extractScannablePaths } from "./differ";
+import { detectSecretsInDiff, mergeSecretFindings } from "./secretsDetector";
 import type { AIAnalysisResult, ScanContext, ScanCoverage } from "../../../../packages/scanner-contract/types";
 import type { ProjectClassification } from "../../../../packages/scanner-contract/scanner-rules";
 import { PROJECT_TYPE_RULES, isTestScaffolding } from "../../../../packages/scanner-contract/scanner-rules";
@@ -340,7 +341,7 @@ export async function analyzeCode(
 
     // Post-filter: drop findings in test scaffolding paths (static list + classifier-identified paths).
     const classifierTestPaths = classification?.test_paths ?? [];
-    const issues = rawIssues.filter((issue) => {
+    let issues = rawIssues.filter((issue) => {
       if (isTestScaffolding(issue.file_path)) return false;
       if (classifierTestPaths.some((p) => issue.file_path.toLowerCase().startsWith(p.toLowerCase()))) {
         return false;
@@ -353,6 +354,21 @@ export async function analyzeCode(
       }
       return true;
     });
+
+    // Layer deterministic secrets detection under the LLM findings. Pattern-
+    // verified secrets replace overlapping AI-inferred ones and are subject to
+    // the same test-scaffolding filters as everything else.
+    if (mode === "diff_scan") {
+      const detected = detectSecretsInDiff(diff).filter(
+        (d) =>
+          !isTestScaffolding(d.filePath) &&
+          !classifierTestPaths.some((p) => d.filePath.toLowerCase().startsWith(p.toLowerCase())),
+      );
+      if (detected.length) {
+        console.log(`[ai] Deterministic secrets detector flagged ${detected.length} line(s)`);
+      }
+      issues = mergeSecretFindings(detected, issues);
+    }
 
     return {
       issues,
