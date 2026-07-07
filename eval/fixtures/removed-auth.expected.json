@@ -1,0 +1,6 @@
+{
+  "name": "Removed admin authorization middleware",
+  "expect": [
+    { "file": "src/routes/admin.js", "categories": ["missing_auth", "privilege_escalation"] }
+  ]
+}

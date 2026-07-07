@@ -1,0 +1,6 @@
+{
+  "name": "SQL injection via string concatenation",
+  "expect": [
+    { "file": "src/routes/orders.js", "categories": ["sql_injection"] }
+  ]
+}

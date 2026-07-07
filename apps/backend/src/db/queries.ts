@@ -616,6 +616,33 @@ export async function getFalsePositivePatterns(
 // Returns true if a scan slot was claimed, false if the limit was already reached.
 // For paid plans, pass the org's stored scan_month so the RPC never resets on a
 // calendar boundary — only Paddle's transaction.completed webhook resets the counter.
+/**
+ * Idempotency marker for quota claims. The worker checks this before claiming
+ * a quota slot so a Bull retry of a scan that already claimed (then failed
+ * later in the pipeline) never consumes a second slot.
+ */
+export async function scanQuotaAlreadyClaimed(scanId: string): Promise<boolean> {
+  const {data, error} = await supabase
+    .from("scans")
+    .select("quota_claimed")
+    .eq("id", scanId)
+    .single();
+  if (error) {
+    // Unknown state — treat as unclaimed; worst case matches old behaviour.
+    console.error("[db] scanQuotaAlreadyClaimed failed:", error.message);
+    return false;
+  }
+  return !!data?.quota_claimed;
+}
+
+export async function markScanQuotaClaimed(scanId: string): Promise<void> {
+  const {error} = await supabase
+    .from("scans")
+    .update({quota_claimed: true})
+    .eq("id", scanId);
+  if (error) console.error("[db] markScanQuotaClaimed failed:", error.message);
+}
+
 export async function tryClaimScan(
   orgId: string,
   scanLimit: number,

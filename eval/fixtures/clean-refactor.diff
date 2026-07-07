@@ -1,0 +1,19 @@
+diff --git a/src/lib/format.js b/src/lib/format.js
+index 1111111..2222222 100644
+--- a/src/lib/format.js
++++ b/src/lib/format.js
+@@ -1,9 +1,9 @@
+-function fmtDate(d) {
+-  return d.toISOString().slice(0, 10);
++function formatDate(date) {
++  return date.toISOString().slice(0, 10);
+ }
+ 
+-function fmtMoney(cents) {
+-  return `$${(cents / 100).toFixed(2)}`;
++function formatMoney(cents) {
++  return `$${(cents / 100).toFixed(2)}`;
+ }
+ 
+-module.exports = { fmtDate, fmtMoney };
++module.exports = { formatDate, formatMoney };

@@ -1,0 +1,6 @@
+{
+  "name": "IDOR — invoice fetched by user-supplied id without ownership check",
+  "expect": [
+    { "file": "src/routes/invoices.js", "categories": ["idor"] }
+  ]
+}

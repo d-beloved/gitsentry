@@ -1,0 +1,13 @@
+diff --git a/src/routes/preview.js b/src/routes/preview.js
+index 1111111..2222222 100644
+--- a/src/routes/preview.js
++++ b/src/routes/preview.js
+@@ -5,6 +5,11 @@ const router = express.Router();
+ 
++router.post('/preview', async (req, res) => {
++  const target = req.body.url;
++  const upstream = await fetch(target);
++  res.send(await upstream.text());
++});
+ 
+ module.exports = router;

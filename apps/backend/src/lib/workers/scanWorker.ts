@@ -16,6 +16,8 @@ import {
   getPreviousPRCommentId,
   updateScanCommentId,
   recordAiUsage,
+  scanQuotaAlreadyClaimed,
+  markScanQuotaClaimed,
 } from "../../db/queries";
 import { notifyIfNeeded } from "../notifier";
 import type { ScanJobData } from "../../../../../packages/scanner-contract/types";
@@ -66,16 +68,22 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
         await updateScanStatus(scanId, [], 0, "failed");
         return;
       }
-      const claimed = await tryClaimScan(org.id, scanLimit, org.plan ?? "free", org.scan_month ?? null);
-      if (!claimed) {
-        console.log(
-          `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
-        );
-        await updateScanStatus(scanId, [], 0, "failed");
-        postUpgradeComment(repoFullName, {prNumber, commitSha}, installationId).catch(
-          (err: Error) => console.error("[worker] upgrade comment failed:", err.message),
-        );
-        return;
+      // Idempotency: a Bull retry of a job that already claimed its slot (then
+      // failed later in the pipeline) must not consume a second one.
+      const alreadyClaimed = await scanQuotaAlreadyClaimed(scanId);
+      if (!alreadyClaimed) {
+        const claimed = await tryClaimScan(org.id, scanLimit, org.plan ?? "free", org.scan_month ?? null);
+        if (!claimed) {
+          console.log(
+            `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
+          );
+          await updateScanStatus(scanId, [], 0, "failed");
+          postUpgradeComment(repoFullName, {prNumber, commitSha}, installationId).catch(
+            (err: Error) => console.error("[worker] upgrade comment failed:", err.message),
+          );
+          return;
+        }
+        await markScanQuotaClaimed(scanId);
       }
     }
 

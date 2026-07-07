@@ -1,0 +1,14 @@
+diff --git a/src/routes/invoices.js b/src/routes/invoices.js
+index 1111111..2222222 100644
+--- a/src/routes/invoices.js
++++ b/src/routes/invoices.js
+@@ -8,6 +8,11 @@ const router = express.Router();
+ router.use(requireAuth);
+ 
++router.get('/invoices/:id/download', async (req, res) => {
++  const invoice = await Invoice.findById(req.params.id);
++  if (!invoice) return res.status(404).end();
++  res.download(invoice.filePath);
++});
+ 
+ module.exports = router;

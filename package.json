@@ -1,7 +1,7 @@
 {
   "name": "gitsentry",
   "version": "1.0.0",
-  "description": "Gitsentry.dev — AI-powered security scanner webhook server",
+  "description": "Gitsentry.dev \u2014 AI-powered security scanner webhook server",
   "private": true,
   "license": "MIT",
   "main": "apps/backend/src/index.ts",
@@ -10,7 +10,8 @@
     "start": "node apps/backend/dist/apps/backend/src/index.js",
     "build": "tsc --project apps/backend/tsconfig.json",
     "test": "jest",
-    "typecheck": "tsc --project apps/backend/tsconfig.json --noEmit"
+    "typecheck": "tsc --project apps/backend/tsconfig.json --noEmit",
+    "eval": "node --env-file=apps/backend/.env --import tsx eval/run.ts"
   },
   "dependencies": {
     "@google/generative-ai": "^0.21.0",

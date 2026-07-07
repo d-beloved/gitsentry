@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS scans (
 -- Migration: add gh_comment_id to existing installs
 ALTER TABLE scans ADD COLUMN IF NOT EXISTS gh_comment_id BIGINT;
 
+-- Migration: quota-claim idempotency marker. Set once the scan has consumed a
+-- monthly quota slot so Bull job retries never claim (and bill) twice.
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS quota_claimed BOOLEAN DEFAULT FALSE;
+
 CREATE TABLE IF NOT EXISTS findings (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   scan_id               UUID REFERENCES scans(id) ON DELETE CASCADE,
