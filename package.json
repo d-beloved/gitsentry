@@ -42,6 +42,9 @@
     "testMatch": [
       "**/__tests__/**/*.test.ts"
     ],
+    "setupFiles": [
+      "<rootDir>/apps/backend/src/lib/__tests__/jest.setup-env.ts"
+    ],
     "transform": {
       "^.+\\.tsx?$": [
         "ts-jest",
