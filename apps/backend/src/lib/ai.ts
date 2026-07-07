@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
 import { extractScannerInput, extractScannablePaths } from "./differ";
 import { detectSecretsInDiff, mergeSecretFindings } from "./secretsDetector";
+import { verifyFindings } from "./verifier";
 import type { AIAnalysisResult, ScanContext, ScanCoverage } from "../../../../packages/scanner-contract/types";
 import type { ProjectClassification } from "../../../../packages/scanner-contract/scanner-rules";
 import { PROJECT_TYPE_RULES, isTestScaffolding } from "../../../../packages/scanner-contract/scanner-rules";
@@ -21,6 +22,10 @@ if (!process.env.GEMINI_SCAN_MODEL || !process.env.GEMINI_SWEEP_MODEL || !proces
 const SCAN_MODEL = process.env.GEMINI_SCAN_MODEL;
 const SWEEP_MODEL = process.env.GEMINI_SWEEP_MODEL;
 const DISCOVERY_MODEL = process.env.GEMINI_DISCOVERY_MODEL;
+// Verification (judge) pass — defaults to the scan model; disable with
+// VERIFY_FINDINGS=off (e.g. while measuring its effect with the eval harness).
+const VERIFIER_MODEL = process.env.GEMINI_VERIFIER_MODEL || SCAN_MODEL;
+const VERIFY_ENABLED = process.env.VERIFY_FINDINGS !== "off";
 
 const CORE_CATEGORIES: [string, string][] = [
   ["hardcoded_secret", "API keys, tokens, passwords, private keys in code"],
@@ -355,6 +360,22 @@ export async function analyzeCode(
       return true;
     });
 
+    // Verification (judge) pass — adjudicate each AI finding against the exact
+    // scanner input; drop rejected findings, lower confidence on uncertain
+    // ones. Runs before the deterministic secrets merge so pattern-verified
+    // findings are never second-guessed by a model. Fails open.
+    let verifyTokensIn = 0;
+    let verifyTokensOut = 0;
+    if (mode === "diff_scan" && VERIFY_ENABLED && issues.length > 0) {
+      const vr = await verifyFindings(genAI, VERIFIER_MODEL, issues, input, context.repo);
+      if (vr.dropped > 0) {
+        console.log(`[ai] Verifier dropped ${vr.dropped}/${issues.length} finding(s) as false positives`);
+      }
+      issues = vr.issues;
+      verifyTokensIn = vr.tokensIn;
+      verifyTokensOut = vr.tokensOut;
+    }
+
     // Layer deterministic secrets detection under the LLM findings. Pattern-
     // verified secrets replace overlapping AI-inferred ones and are subject to
     // the same test-scaffolding filters as everything else.
@@ -375,8 +396,8 @@ export async function analyzeCode(
       summary: parsed.summary || "Analysis complete.",
       scan_mode: mode,
       coverage,
-      tokens_in: tokensIn,
-      tokens_out: tokensOut,
+      tokens_in: tokensIn + verifyTokensIn,
+      tokens_out: tokensOut + verifyTokensOut,
       model_name: modelName,
       threat_model: parsed.threat_model ?? {},
       attack_chains: Array.isArray(parsed.attack_chains) ? parsed.attack_chains : [],
