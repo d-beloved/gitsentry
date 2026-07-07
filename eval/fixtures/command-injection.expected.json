@@ -1,0 +1,6 @@
+{
+  "name": "Command injection via filename in exec",
+  "expect": [
+    { "file": "src/lib/thumbnails.js", "categories": ["command_injection"] }
+  ]
+}

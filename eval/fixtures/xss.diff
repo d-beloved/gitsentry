@@ -1,0 +1,12 @@
+diff --git a/src/routes/search.js b/src/routes/search.js
+index 1111111..2222222 100644
+--- a/src/routes/search.js
++++ b/src/routes/search.js
+@@ -5,6 +5,10 @@ const router = express.Router();
+ 
++router.get('/search', (req, res) => {
++  const q = req.query.q || '';
++  res.send(`<h1>Results for ${q}</h1><div id="results"></div>`);
++});
+ 
+ module.exports = router;

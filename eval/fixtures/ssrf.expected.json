@@ -1,0 +1,6 @@
+{
+  "name": "SSRF via user-controlled fetch URL",
+  "expect": [
+    { "file": "src/routes/preview.js", "categories": ["ssrf"] }
+  ]
+}

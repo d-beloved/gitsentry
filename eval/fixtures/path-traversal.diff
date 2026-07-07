@@ -1,0 +1,14 @@
+diff --git a/src/routes/files.js b/src/routes/files.js
+index 1111111..2222222 100644
+--- a/src/routes/files.js
++++ b/src/routes/files.js
+@@ -6,6 +6,11 @@ const router = express.Router();
+ router.use(requireAuth);
+ 
++router.get('/files/view', (req, res) => {
++  const filePath = path.join(UPLOADS_DIR, req.query.name);
++  const content = fs.readFileSync(filePath, 'utf8');
++  res.type('text/plain').send(content);
++});
+ 
+ module.exports = router;

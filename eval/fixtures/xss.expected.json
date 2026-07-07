@@ -1,0 +1,6 @@
+{
+  "name": "Reflected XSS via unescaped query param",
+  "expect": [
+    { "file": "src/routes/search.js", "categories": ["xss"] }
+  ]
+}

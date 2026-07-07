@@ -1,0 +1,17 @@
+diff --git a/src/lib/thumbnails.js b/src/lib/thumbnails.js
+index 1111111..2222222 100644
+--- a/src/lib/thumbnails.js
++++ b/src/lib/thumbnails.js
+@@ -1,6 +1,12 @@
+ const { exec } = require('child_process');
+ 
++function makeThumbnail(req, res) {
++  const name = req.body.filename;
++  exec(`convert uploads/${name} -resize 200x200 thumbs/${name}`, (err) => {
++    if (err) return res.status(500).end();
++    res.json({ ok: true });
++  });
++}
+ 
+-module.exports = {};
++module.exports = { makeThumbnail };

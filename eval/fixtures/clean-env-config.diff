@@ -1,0 +1,12 @@
+diff --git a/src/config.js b/src/config.js
+index 1111111..2222222 100644
+--- a/src/config.js
++++ b/src/config.js
+@@ -1,6 +1,9 @@
+ module.exports = {
+   port: process.env.PORT || 3000,
++  stripeKey: process.env.STRIPE_SECRET_KEY,
++  webhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
++  redisUrl: process.env.REDIS_URL,
+   env: process.env.NODE_ENV || 'development',
+ };

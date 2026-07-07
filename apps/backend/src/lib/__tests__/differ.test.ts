@@ -149,3 +149,97 @@ describe("truncateDiff", () => {
     expect(truncateDiff(long)).toContain("[diff truncated]");
   });
 });
+
+// ─── extractScannerInput ─────────────────────────────────────────────────────
+
+import { extractScannerInput, extractWithContext } from "../differ";
+
+const DELETION_DIFF = `\
+diff --git a/src/middleware.js b/src/middleware.js
+index 1234567..89abcde 100644
+--- a/src/middleware.js
++++ b/src/middleware.js
+@@ -1,4 +1,3 @@
+ const router = require('./router');
+-router.use(requireAuth);
+ router.get('/users', listUsers);
+ module.exports = router;
+`;
+
+const MIXED_CODE_DOCS_DIFF = `\
+diff --git a/src/api.js b/src/api.js
+index 1234567..89abcde 100644
+--- a/src/api.js
++++ b/src/api.js
+@@ -1,3 +1,3 @@
+ const db = require('./db');
+-const q = db.prepare('SELECT * FROM users WHERE id = ?');
++const q = 'SELECT * FROM users WHERE id = ' + req.params.id;
+ module.exports = q;
+diff --git a/README.md b/README.md
+index 1234567..89abcde 100644
+--- a/README.md
++++ b/README.md
+@@ -1,1 +1,2 @@
+ # App
++Some docs here.
+`;
+
+describe("extractScannerInput", () => {
+  it("includes removed lines labelled with their old line number", () => {
+    const { text, coverage } = extractScannerInput(DELETION_DIFF);
+    expect(text).toContain("- (was L2): router.use(requireAuth);");
+    expect(coverage).toEqual({ filesTotal: 1, filesScanned: 1, truncated: false });
+  });
+
+  it("treats deletion-only files as scannable", () => {
+    const { coverage } = extractScannerInput(DELETION_DIFF);
+    expect(coverage.filesTotal).toBe(1);
+  });
+
+  it("keeps added, removed, and context lines under normal budget", () => {
+    const { text } = extractScannerInput(MIXED_CODE_DOCS_DIFF);
+    expect(text).toContain("+ L2: const q = 'SELECT * FROM users WHERE id = ' + req.params.id;");
+    expect(text).toContain("- (was L2): const q = db.prepare('SELECT * FROM users WHERE id = ?');");
+    expect(text).toContain("  L1: const db = require('./db');");
+  });
+
+  it("drops low-risk files before code files under budget pressure", () => {
+    // Budget fits the code file but not code + README with context.
+    const codeOnly = extractScannerInput(MIXED_CODE_DOCS_DIFF, 250);
+    expect(codeOnly.text).toContain("src/api.js");
+    expect(codeOnly.text).not.toContain("Some docs here.");
+    expect(codeOnly.text).toContain("[NOT SCANNED");
+    expect(codeOnly.coverage.truncated).toBe(true);
+    expect(codeOnly.coverage.filesScanned).toBeLessThan(codeOnly.coverage.filesTotal);
+  });
+
+  it("never returns zero files when a single file exceeds the budget", () => {
+    const { text, coverage } = extractScannerInput(MIXED_CODE_DOCS_DIFF, 80);
+    expect(coverage.filesScanned).toBeGreaterThanOrEqual(1);
+    expect(text.length).toBeGreaterThan(0);
+  });
+
+  it("reports full coverage when nothing is truncated", () => {
+    const { coverage } = extractScannerInput(MIXED_CODE_DOCS_DIFF);
+    expect(coverage).toEqual({ filesTotal: 2, filesScanned: 2, truncated: false });
+  });
+});
+
+describe("extractWithContext (back-compat wrapper)", () => {
+  it("returns the same text as extractScannerInput", () => {
+    expect(extractWithContext(MIXED_CODE_DOCS_DIFF)).toBe(extractScannerInput(MIXED_CODE_DOCS_DIFF).text);
+  });
+});
+
+describe("deletion-aware scannable checks", () => {
+  it("hasScannableContent is true for deletion-only diffs", () => {
+    const { hasScannableContent } = require("../differ");
+    expect(hasScannableContent(DELETION_DIFF)).toBe(true);
+  });
+
+  it("extractScannablePaths includes deletion-only files", () => {
+    const { extractScannablePaths } = require("../differ");
+    expect(extractScannablePaths(DELETION_DIFF)).toContain("src/middleware.js");
+  });
+});

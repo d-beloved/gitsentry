@@ -1,0 +1,15 @@
+diff --git a/src/routes/admin.js b/src/routes/admin.js
+index 1111111..2222222 100644
+--- a/src/routes/admin.js
++++ b/src/routes/admin.js
+@@ -4,10 +4,9 @@ const router = express.Router();
+ const { requireAuth, requireAdmin } = require('../middleware/auth');
+ 
+-router.use(requireAuth);
+-router.use(requireAdmin);
++router.use(requireAuth);
+ 
+ router.post('/admin/users/:id/promote', async (req, res) => {
+   await User.promoteToAdmin(req.params.id);
+   res.json({ ok: true });
+ });

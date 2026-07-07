@@ -1,0 +1,16 @@
+diff --git a/src/routes/orders.js b/src/routes/orders.js
+index 1111111..2222222 100644
+--- a/src/routes/orders.js
++++ b/src/routes/orders.js
+@@ -10,6 +10,12 @@ const router = express.Router();
+ router.use(requireAuth);
+ 
++router.get('/orders/search', async (req, res) => {
++  const status = req.query.status;
++  const rows = await db.query(
++    `SELECT * FROM orders WHERE status = '${status}' AND user_id = ${req.user.id}`
++  );
++  res.json(rows);
++});
+ 
+ module.exports = router;

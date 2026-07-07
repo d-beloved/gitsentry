@@ -7,11 +7,15 @@ let scanQueue: Bull.Queue<ScanJobData> | null = null;
 if (process.env.REDIS_URL) {
   try {
     const isTLS = process.env.REDIS_URL.startsWith("rediss://");
+    // TLS certificates are verified by default. Some legacy managed Redis
+    // providers (e.g. old Heroku Redis plans) serve self-signed certs; opt
+    // out explicitly with REDIS_TLS_REJECT_UNAUTHORIZED=false — never by default.
+    const rejectUnauthorized = process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== "false";
     scanQueue = new Bull<ScanJobData>("scan", process.env.REDIS_URL, {
       redis: {
         maxRetriesPerRequest: null,
         enableReadyCheck: false,
-        ...(isTLS ? { tls: { rejectUnauthorized: false } } : {}),
+        ...(isTLS ? { tls: { rejectUnauthorized } } : {}),
       },
       defaultJobOptions: {
         attempts: 3,
