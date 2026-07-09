@@ -620,20 +620,30 @@ export async function removeBranchProtection(
   }
 }
 
+const PLAN_LABELS: Record<string, string> = {free: "Free", starter: "Starter", pro: "Pro"};
+
 export async function postUpgradeComment(
   repoFullName: string,
   target: {prNumber?: number | null; commitSha?: string | null},
   installationId: number,
+  plan: string = "free",
+  scanLimit: number = 10,
 ): Promise<void> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
+  const planLabel = PLAN_LABELS[plan] ?? "Free";
+  const upgradeLine =
+    plan === "pro"
+      ? `Your **${scanLimit} scans** for this month have all been used. Need a higher cap? [Contact us](${PRODUCT_URL}/dashboard/billing) about a custom plan.`
+      : `**[Upgrade](${PRODUCT_URL}/dashboard/billing)** for more monthly scans, private repo support, and on-demand security sweeps.`;
+
   const body = [
-    `## 🔐 ${PRODUCT_NAME} — Free Tier Limit Reached`,
+    `## 🔐 ${PRODUCT_NAME} — ${planLabel} Plan Limit Reached`,
     "",
-    "You've used all **10 free scans** for this month. This commit was not scanned.",
+    `You've used all **${scanLimit} scans** for this month on the ${planLabel} plan. This commit was not scanned.`,
     "",
-    `**[Upgrade to Pro](${PRODUCT_URL}/dashboard/billing)** for unlimited scans, private repo support, and on-demand security sweeps.`,
+    upgradeLine,
     "",
     `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})_`,
   ].join("\n");

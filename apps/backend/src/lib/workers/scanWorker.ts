@@ -93,9 +93,13 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
             `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
           );
           await updateScanStatus(scanId, [], 0, "skipped", { failureReason: "quota_exceeded" });
-          postUpgradeComment(repoFullName, {prNumber, commitSha}, installationId).catch(
-            (err: Error) => console.error("[worker] upgrade comment failed:", err.message),
-          );
+          postUpgradeComment(
+            repoFullName,
+            {prNumber, commitSha},
+            installationId,
+            org.plan ?? "free",
+            scanLimit,
+          ).catch((err: Error) => console.error("[worker] upgrade comment failed:", err.message));
           return;
         }
         await markScanQuotaClaimed(scanId);
