@@ -1,5 +1,5 @@
-import { getDiff, getIncrementalDiff, postBotPRSkipComment, postSyncSkipComment } from "../lib/github";
-import { saveScan, getOrgByInstallationId, scanExistsForCommit, getLastPRScanResult } from "../db/queries";
+import { getDiff, getIncrementalDiff, postBotPRSkipComment, postSyncSkipComment, postSubscriptionPausedComment } from "../lib/github";
+import { saveScan, updateScanStatus, getOrgByInstallationId, scanExistsForCommit, getLastPRScanResult } from "../db/queries";
 import { parseDiffStats, truncateDiff, hasScannableContent } from "../lib/differ";
 import { isDependencyBot, isReleaseAutomationPR } from "../lib/botDetection";
 import { dispatchScan } from "../lib/queue";
@@ -7,6 +7,11 @@ import { dispatchScan } from "../lib/queue";
 // Starter plan: skip re-scan on synchronize if the last scan was clean and the
 // incremental diff is below this line threshold (covers minor fixup commits).
 const STARTER_CLEAN_RESCAN_THRESHOLD = 25;
+
+// Subscription states that mean a paid plan has lapsed. Paddle downgrades plan
+// to "free" on lapse, so an org whose plan is "free" *and* whose status is one
+// of these was a paying customer whose access to private-repo scans just ended.
+const LAPSED_SUBSCRIPTION_STATUSES = new Set(["canceled", "past_due", "payment_failed"]);
 
 export async function handlePR(payload: Record<string, unknown>): Promise<void> {
   const action = payload.action as string;
@@ -69,7 +74,47 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
   }
 
   if (repo.private && (!org || org.plan === "free")) {
-    console.log(`[PR] Skipping private repo ${repo.full_name} — free plan`);
+    // A downgraded org (was paying, subscription lapsed) still expects its
+    // private repos to be scanned. Instead of silently dropping the scan —
+    // which made the dashboard look "clean" when nothing ran — record an
+    // explicit skipped scan so the dashboard tells the truth, and (once, on
+    // open/reopen) explain on the PR why scanning is paused.
+    const lapsed = !!(org?.subscription_status && LAPSED_SUBSCRIPTION_STATUSES.has(org.subscription_status));
+    if (lapsed) {
+      try {
+        const skippedScan = await saveScan({
+          repoFullName: repo.full_name as string,
+          repoGithubId: repo.id as number,
+          repoOwner: {
+            githubId: repoOwner.id as number,
+            login: repoOwner.login as string,
+            avatarUrl: repoOwner.avatar_url as string | null,
+          },
+          installationId,
+          isPrivate: (repo.private as boolean) ?? false,
+          triggerType: "pull_request",
+          triggerRef: String(pr.number),
+          commitSha: prHead.sha as string,
+          author: prUser.login as string,
+          filesChanged: 0,
+          linesAdded: 0,
+        });
+        await updateScanStatus(skippedScan.id, [], 0, "skipped", {
+          failureReason: "subscription_inactive",
+        });
+      } catch (err) {
+        console.error("[PR] failed to record subscription-paused skip:", (err as Error).message);
+      }
+
+      if (action !== "synchronize") {
+        postSubscriptionPausedComment(
+          repo.full_name as string,
+          pr.number as number,
+          installationId,
+        ).catch((err: Error) => console.error("[PR] postSubscriptionPausedComment failed:", err.message));
+      }
+    }
+    console.log(`[PR] Skipping private repo ${repo.full_name} — free/${org?.subscription_status ?? "no-sub"} plan`);
     return;
   }
 

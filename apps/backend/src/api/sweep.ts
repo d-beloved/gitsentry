@@ -197,9 +197,14 @@ router.post(
         recommendations,
       });
     } catch (err) {
-      console.error("[sweep] Failed:", err);
+      const errorMessage = err instanceof Error ? (err.stack ?? err.message) : String(err);
+      console.error("[sweep] Failed:", errorMessage);
       if (scan) {
-        await updateScanStatus(scan.id, [], 0, "failed").catch(() => {});
+        await updateScanStatus(scan.id, [], 0, "failed", {
+          failureReason: "pipeline_error",
+          creditRefunded: true,
+          errorDetail: errorMessage,
+        }).catch(() => {});
       }
       // Refund the slot on unexpected failure so the user isn't charged for a broken sweep
       if (usedMonthlyQuota) await refundMonthlySweep(org.id).catch(() => {});

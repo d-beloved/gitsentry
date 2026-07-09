@@ -18,8 +18,13 @@ import {
   recordAiUsage,
   scanQuotaAlreadyClaimed,
   markScanQuotaClaimed,
+  refundScanSlot,
 } from "../../db/queries";
-import { notifyIfNeeded } from "../notifier";
+import { notifyIfNeeded, notifyScanFailure } from "../notifier";
+
+// Subscription states that mean the org is no longer entitled to scans. Paddle
+// sets plan:"free" on lapse, so we key entitlement off the status, not the plan.
+const LAPSED_SUBSCRIPTION_STATUSES = new Set(["canceled", "past_due", "payment_failed"]);
 import type { ScanJobData } from "../../../../../packages/scanner-contract/types";
 
 const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50, pro: 500};
@@ -56,6 +61,16 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[org?.plan ?? "free"] ?? SCAN_LIMITS.free;
 
+    // Entitlement: a lapsed subscription means the org isn't entitled to this
+    // scan. Record it as an explicit skip (not "failed", not silently "clean")
+    // and don't claim a credit. Only applies when the caller hasn't already
+    // claimed a slot (e.g. a manual rescan the user paid for).
+    if (!quotaAlreadyClaimed && org?.subscription_status && LAPSED_SUBSCRIPTION_STATUSES.has(org.subscription_status)) {
+      console.log(`[worker] Scan ${scanId} skipped: subscription ${org.subscription_status}`);
+      await updateScanStatus(scanId, [], 0, "skipped", { failureReason: "subscription_inactive" });
+      return;
+    }
+
     // Claim a scan slot for all plans (including Pro, which is capped at 500/month).
     // Skip when the caller already claimed atomically (rescan endpoint, issue_comment
     // webhook) to prevent double-counting.
@@ -65,7 +80,7 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
         // No org record means we cannot enforce per-org quota — fail closed to prevent
         // unlimited free scans on public repos that never completed installation setup.
         console.log(`[worker] Scan ${scanId} skipped: no org record (installation incomplete)`);
-        await updateScanStatus(scanId, [], 0, "failed");
+        await updateScanStatus(scanId, [], 0, "skipped", { failureReason: "no_org" });
         return;
       }
       // Idempotency: a Bull retry of a job that already claimed its slot (then
@@ -77,7 +92,7 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
           console.log(
             `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
           );
-          await updateScanStatus(scanId, [], 0, "failed");
+          await updateScanStatus(scanId, [], 0, "skipped", { failureReason: "quota_exceeded" });
           postUpgradeComment(repoFullName, {prNumber, commitSha}, installationId).catch(
             (err: Error) => console.error("[worker] upgrade comment failed:", err.message),
           );
@@ -179,8 +194,34 @@ export async function processScanJob(data: ScanJobData): Promise<void> {
       modelName: model_name,
     });
   } catch (err) {
-    console.error(`[worker] Scan ${scanId} failed:`, (err as Error).message);
-    await updateScanStatus(scanId, [], 0, "failed").catch(() => {});
+    const errorMessage = err instanceof Error ? (err.stack ?? err.message) : String(err);
+    console.error(`[worker] Scan ${scanId} failed:`, errorMessage);
+
+    // If this scan had already consumed a quota slot (either the caller claimed
+    // it — rescan/issue_comment — or we claimed it above), refund it so a genuine
+    // pipeline failure never costs the customer a scan, and let them know.
+    const org = await getOrgByRepoId(repoId).catch(() => null);
+    let creditRefunded = false;
+    if (org) {
+      const slotClaimed = quotaAlreadyClaimed || (await scanQuotaAlreadyClaimed(scanId).catch(() => false));
+      if (slotClaimed) {
+        await refundScanSlot(org.id, org.plan ?? "free", org.scan_month ?? null).catch(() => {});
+        creditRefunded = true;
+      }
+    }
+
+    await updateScanStatus(scanId, [], Date.now() - startedAt, "failed", {
+      failureReason: "pipeline_error",
+      creditRefunded,
+      errorDetail: errorMessage,
+    }).catch(() => {});
+
+    if (creditRefunded) {
+      notifyScanFailure(repoId, repoFullName, "pipeline_error", true, scanId).catch((e: Error) =>
+        console.error("[worker] notifyScanFailure failed:", e.message),
+      );
+    }
+
     throw err;
   }
 }

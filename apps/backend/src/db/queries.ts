@@ -160,14 +160,37 @@ export async function saveScan(params: {
   return data as ScanRow;
 }
 
+export type ScanStatus = "complete" | "failed" | "skipped";
+
+// Why a scan did not complete. 'skipped' outcomes are benign (the scan was
+// intentionally not run); 'failed' outcomes are real pipeline errors.
+export type ScanFailureReason =
+  | "quota_exceeded"
+  | "subscription_inactive"
+  | "no_org"
+  | "no_diff"
+  | "ai_error"
+  | "pipeline_error";
+
 export async function updateScanStatus(
   scanId: string,
   issues: Array<{severity: string}>,
   durationMs: number = 0,
-  status: "complete" | "failed" = "complete",
-  tokens?: { tokensIn: number; tokensOut: number; modelName?: string },
+  status: ScanStatus = "complete",
+  opts?: {
+    tokensIn?: number;
+    tokensOut?: number;
+    modelName?: string;
+    failureReason?: ScanFailureReason;
+    creditRefunded?: boolean;
+    /** Raw exception message for admin diagnosis — never shown to customers. */
+    errorDetail?: string;
+  },
 ): Promise<void> {
   const {critical, high, medium, low} = countBySeverity(issues);
+  const hasTokens = opts?.tokensIn != null || opts?.tokensOut != null;
+  // Cap so one runaway error (e.g. a stringified HTML error page) can't bloat the row.
+  const errorDetail = opts?.errorDetail?.slice(0, 2000) ?? null;
 
   const {error} = await supabase
     .from("scans")
@@ -179,7 +202,12 @@ export async function updateScanStatus(
       medium_count: medium,
       low_count: low,
       duration_ms: durationMs,
-      ...(tokens ? { tokens_in: tokens.tokensIn, tokens_out: tokens.tokensOut, ai_model: tokens.modelName ?? null } : {}),
+      // Clear on success, set on skip/failure — so a re-run that finally
+      // completes doesn't leave a stale reason/detail behind.
+      failure_reason: opts?.failureReason ?? null,
+      error_detail: errorDetail,
+      ...(opts?.creditRefunded != null ? { credit_refunded: opts.creditRefunded } : {}),
+      ...(hasTokens ? { tokens_in: opts?.tokensIn ?? 0, tokens_out: opts?.tokensOut ?? 0, ai_model: opts?.modelName ?? null } : {}),
     })
     .eq("id", scanId);
 
@@ -671,4 +699,24 @@ export async function tryClaimScan(
     return false;
   }
   return !!data;
+}
+
+// Releases one monthly scan slot previously claimed via tryClaimScan. Called
+// when a scan errors after claiming its slot but before producing results, so a
+// genuine failure never costs the customer a scan. effectiveMonth is derived the
+// same way as tryClaimScan so the refund lands in the exact billing month the
+// slot was claimed in (refund_scan no-ops if the month has since rolled over).
+export async function refundScanSlot(
+  orgId: string,
+  plan: string = "free",
+  storedScanMonth: string | null = null,
+): Promise<void> {
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const effectiveMonth =
+    plan === "free" || !storedScanMonth ? currentMonth : storedScanMonth;
+  const {error} = await supabase.rpc("refund_scan", {
+    p_org_id: orgId,
+    p_month: effectiveMonth,
+  });
+  if (error) console.error("[db] refundScanSlot rpc error:", error.message);
 }

@@ -41,9 +41,12 @@ CREATE TABLE IF NOT EXISTS scans (
   high_count      INT DEFAULT 0,
   medium_count    INT DEFAULT 0,
   low_count       INT DEFAULT 0,
-  status          TEXT DEFAULT 'pending', -- 'pending' | 'complete' | 'failed'
+  status          TEXT DEFAULT 'pending', -- 'pending' | 'complete' | 'failed' | 'skipped'
   duration_ms     INT,
   gh_comment_id   BIGINT,
+  failure_reason  TEXT,                    -- why a scan didn't complete (see migration 005)
+  credit_refunded BOOLEAN DEFAULT FALSE,   -- true when a claimed quota slot was refunded
+  error_detail    TEXT,                    -- raw exception message for admin diagnosis (migration 006)
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -53,6 +56,17 @@ ALTER TABLE scans ADD COLUMN IF NOT EXISTS gh_comment_id BIGINT;
 -- Migration: quota-claim idempotency marker. Set once the scan has consumed a
 -- monthly quota slot so Bull job retries never claim (and bill) twice.
 ALTER TABLE scans ADD COLUMN IF NOT EXISTS quota_claimed BOOLEAN DEFAULT FALSE;
+
+-- Migration 005: truthful scan outcomes. status='skipped' means the scan was
+-- intentionally not run (quota_exceeded | subscription_inactive | no_org |
+-- no_diff); status='failed' means the pipeline errored (pipeline_error |
+-- ai_error), and credit_refunded=true when the claimed quota slot was released.
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS failure_reason  TEXT;
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS credit_refunded BOOLEAN DEFAULT FALSE;
+
+-- Migration 006: raw error message behind failure_reason, for admin diagnosis
+-- without needing to check server logs. Admin-only surface, capped ~2000 chars.
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS error_detail TEXT;
 
 CREATE TABLE IF NOT EXISTS findings (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -310,6 +324,41 @@ BEGIN
   IF v_count > 0 THEN
     UPDATE orgs
        SET sweep_count_month = v_count - 1
+     WHERE id = p_org_id;
+  END IF;
+END;
+$$;
+
+-- Atomically refunds one monthly scan slot (e.g. when a scan errors after
+-- claiming its quota slot but before producing results). Mirrors refund_sweep,
+-- but only refunds while the org is still inside the billing month the slot was
+-- claimed in (p_month) so a month rollover never underflows the counter.
+CREATE OR REPLACE FUNCTION refund_scan(p_org_id UUID, p_month TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+AS $$
+DECLARE
+  v_count INT;
+  v_month TEXT;
+BEGIN
+  SELECT scan_count_month, scan_month
+    INTO v_count, v_month
+    FROM orgs
+   WHERE id = p_org_id
+     FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RETURN;
+  END IF;
+
+  IF v_month IS DISTINCT FROM p_month THEN
+    RETURN;
+  END IF;
+
+  IF v_count > 0 THEN
+    UPDATE orgs
+       SET scan_count_month = v_count - 1
      WHERE id = p_org_id;
   END IF;
 END;

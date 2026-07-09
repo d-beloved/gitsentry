@@ -660,3 +660,33 @@ export async function postUpgradeComment(
     );
   }
 }
+
+/**
+ * Posts a PR comment explaining that scanning is paused because the org's
+ * subscription ended (so private-repo scanning is disabled). Mirrors
+ * postUpgradeComment — used when a downgraded org opens a PR on a private repo,
+ * so the reason for "no scan" is visible on the PR, not just silently dropped.
+ */
+export async function postSubscriptionPausedComment(
+  repoFullName: string,
+  prNumber: number,
+  installationId: number,
+): Promise<void> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  const body = [
+    `## ⏸️ ${PRODUCT_NAME} — Scanning Paused`,
+    "",
+    "Your subscription has ended, so **private-repo scanning is currently disabled** — this PR was not scanned. Public repositories are still scanned on the free plan.",
+    "",
+    `**[Resubscribe](${PRODUCT_URL}/dashboard/billing)** to re-enable private-repo scans, security sweeps, and PR check runs.`,
+    "",
+    `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})_`,
+  ].join("\n");
+
+  await octokit.request(
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    {owner, repo, issue_number: prNumber, body},
+  );
+}
