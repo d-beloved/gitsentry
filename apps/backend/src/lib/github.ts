@@ -373,7 +373,8 @@ export async function postSyncSkipComment(
   prNumber: number,
   linesAdded: number,
   installationId: number,
-): Promise<void> {
+  existingCommentId?: number | null,
+): Promise<number> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -388,10 +389,19 @@ export async function postSyncSkipComment(
     `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})_`,
   ].join("\n");
 
-  await octokit.request(
+  if (existingCommentId) {
+    const {data} = await octokit.request(
+      "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
+      {owner, repo, comment_id: existingCommentId, body},
+    );
+    return data.id;
+  }
+
+  const {data} = await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
     {owner, repo, issue_number: prNumber, body},
   );
+  return data.id;
 }
 
 export async function postBotPRSkipComment(
@@ -622,13 +632,21 @@ export async function removeBranchProtection(
 
 const PLAN_LABELS: Record<string, string> = {free: "Free", starter: "Starter", pro: "Pro"};
 
+/**
+ * Posts (or updates, if existingCommentId is given) the quota-exceeded comment.
+ * Returns the PR comment's id so callers can persist it and update the same
+ * comment on the next quota-exceeded push, instead of stacking a new one each
+ * time. commitSha-only targets aren't updatable (each commit is a distinct
+ * event) so no id is returned for that branch.
+ */
 export async function postUpgradeComment(
   repoFullName: string,
   target: {prNumber?: number | null; commitSha?: string | null},
   installationId: number,
   plan: string = "free",
   scanLimit: number = 10,
-): Promise<void> {
+  existingCommentId?: number | null,
+): Promise<number | null> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -649,7 +667,14 @@ export async function postUpgradeComment(
   ].join("\n");
 
   if (target.prNumber != null) {
-    await octokit.request(
+    if (existingCommentId) {
+      const {data} = await octokit.request(
+        "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
+        {owner, repo, comment_id: existingCommentId, body},
+      );
+      return data.id;
+    }
+    const {data} = await octokit.request(
       "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
       {
         owner,
@@ -658,6 +683,7 @@ export async function postUpgradeComment(
         body,
       },
     );
+    return data.id;
   } else if (target.commitSha) {
     await octokit.request(
       "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments",
@@ -669,6 +695,7 @@ export async function postUpgradeComment(
       },
     );
   }
+  return null;
 }
 
 /**
@@ -681,7 +708,8 @@ export async function postSubscriptionPausedComment(
   repoFullName: string,
   prNumber: number,
   installationId: number,
-): Promise<void> {
+  existingCommentId?: number | null,
+): Promise<number> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
@@ -695,8 +723,17 @@ export async function postSubscriptionPausedComment(
     `_Powered by [${PRODUCT_NAME}](${PRODUCT_URL})_`,
   ].join("\n");
 
-  await octokit.request(
+  if (existingCommentId) {
+    const {data} = await octokit.request(
+      "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
+      {owner, repo, comment_id: existingCommentId, body},
+    );
+    return data.id;
+  }
+
+  const {data} = await octokit.request(
     "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
     {owner, repo, issue_number: prNumber, body},
   );
+  return data.id;
 }

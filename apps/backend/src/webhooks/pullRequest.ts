@@ -1,5 +1,5 @@
 import { getDiff, getIncrementalDiff, postBotPRSkipComment, postSyncSkipComment, postSubscriptionPausedComment } from "../lib/github";
-import { saveScan, updateScanStatus, getOrgByInstallationId, scanExistsForCommit, getLastPRScanResult } from "../db/queries";
+import { saveScan, updateScanStatus, getOrgByInstallationId, scanExistsForCommit, getLastPRScanResult, getPreviousPRCommentId, updateScanCommentId, getRepoIdByFullName } from "../db/queries";
 import { parseDiffStats, truncateDiff, hasScannableContent } from "../lib/differ";
 import { isDependencyBot, isReleaseAutomationPR } from "../lib/botDetection";
 import { dispatchScan } from "../lib/queue";
@@ -81,6 +81,8 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     // open/reopen) explain on the PR why scanning is paused.
     const lapsed = !!(org?.subscription_status && LAPSED_SUBSCRIPTION_STATUSES.has(org.subscription_status));
     if (lapsed) {
+      let skippedScanId: string | null = null;
+      let skippedScanRepoId: string | null = null;
       try {
         const skippedScan = await saveScan({
           repoFullName: repo.full_name as string,
@@ -99,6 +101,8 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
           filesChanged: 0,
           linesAdded: 0,
         });
+        skippedScanId = skippedScan.id;
+        skippedScanRepoId = skippedScan.repo_id;
         await updateScanStatus(skippedScan.id, [], 0, "skipped", {
           failureReason: "subscription_inactive",
         });
@@ -107,11 +111,22 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
       }
 
       if (action !== "synchronize") {
-        postSubscriptionPausedComment(
-          repo.full_name as string,
-          pr.number as number,
-          installationId,
-        ).catch((err: Error) => console.error("[PR] postSubscriptionPausedComment failed:", err.message));
+        (async () => {
+          try {
+            const existing = skippedScanRepoId
+              ? await getPreviousPRCommentId(skippedScanRepoId, pr.number as number)
+              : null;
+            const commentId = await postSubscriptionPausedComment(
+              repo.full_name as string,
+              pr.number as number,
+              installationId,
+              existing?.commentId ?? null,
+            );
+            if (skippedScanId) await updateScanCommentId(skippedScanId, commentId);
+          } catch (err) {
+            console.error("[PR] postSubscriptionPausedComment failed:", (err as Error).message);
+          }
+        })();
       }
     }
     console.log(`[PR] Skipping private repo ${repo.full_name} — free/${org?.subscription_status ?? "no-sub"} plan`);
@@ -166,12 +181,21 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
           console.log(
             `[PR] Skipping small clean-PR update for ${repo.full_name}#${pr.number} — starter plan, ${linesAdded} lines added, last scan clean`,
           );
-          postSyncSkipComment(
-            repo.full_name as string,
-            pr.number as number,
-            linesAdded,
-            installationId,
-          ).catch((err: Error) => console.error("[PR] postSyncSkipComment failed:", err.message));
+          (async () => {
+            try {
+              const repoId = await getRepoIdByFullName(repo.full_name as string);
+              const existing = repoId ? await getPreviousPRCommentId(repoId, pr.number as number) : null;
+              await postSyncSkipComment(
+                repo.full_name as string,
+                pr.number as number,
+                linesAdded,
+                installationId,
+                existing?.commentId ?? null,
+              );
+            } catch (err) {
+              console.error("[PR] postSyncSkipComment failed:", (err as Error).message);
+            }
+          })();
           return;
         }
       }

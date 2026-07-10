@@ -73,6 +73,15 @@ export async function getOrgByInstallationId(
 
 // ─── Scans ────────────────────────────────────────────────────────────────────
 
+export async function getRepoIdByFullName(repoFullName: string): Promise<string | null> {
+  const {data} = await supabase
+    .from("repos")
+    .select("id")
+    .eq("full_name", repoFullName)
+    .single();
+  return (data as {id: string} | null)?.id ?? null;
+}
+
 export async function scanExistsForCommit(
   repoFullName: string,
   commitSha: string,
