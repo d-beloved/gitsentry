@@ -680,6 +680,85 @@ export async function markScanQuotaClaimed(scanId: string): Promise<void> {
   if (error) console.error("[db] markScanQuotaClaimed failed:", error.message);
 }
 
+// ─── Stranded scan recovery ─────────────────────────────────────────────────
+// A scan row is created as 'pending' before the job is dispatched. If the queue
+// accepts the job but the worker never runs it (Redis throttled, dropped by a
+// non-persistent Redis on restart, worker killed mid-job), the row stays
+// 'pending' forever: the customer paid a credit and the dashboard shows a scan
+// that never resolves. The reaper finds those rows and closes them out
+// truthfully. See lib/reaper.ts.
+
+export interface StrandedScanRow {
+  id: string;
+  repo_id: string;
+  created_at: string;
+  quota_claimed: boolean | null;
+  credit_refunded: boolean | null;
+  repos: {full_name: string} | null;
+}
+
+/** Scans still 'pending' well past any plausible run time, oldest first. */
+export async function getStrandedScans(
+  cutoffIso: string,
+  limit: number,
+): Promise<StrandedScanRow[]> {
+  const {data, error} = await supabase
+    .from("scans")
+    .select("id, repo_id, created_at, quota_claimed, credit_refunded, repos(full_name)")
+    .eq("status", "pending")
+    .lt("created_at", cutoffIso)
+    .order("created_at", {ascending: true})
+    .limit(limit);
+
+  if (error) {
+    console.error("[db] getStrandedScans failed:", error.message);
+    return [];
+  }
+  return (data ?? []) as unknown as StrandedScanRow[];
+}
+
+/**
+ * Flips a stranded scan 'pending' → 'failed'. The status filter makes this the
+ * atomic claim: if two backend instances reap concurrently — or the worker
+ * finally wakes up and completes the scan first — only the caller that actually
+ * changed the row gets a row back, so the credit is refunded exactly once.
+ * Returns false when someone else got there first.
+ */
+export async function claimStrandedScan(
+  scanId: string,
+  errorDetail: string,
+): Promise<boolean> {
+  const {data, error} = await supabase
+    .from("scans")
+    .update({
+      status: "failed",
+      failure_reason: "pipeline_error",
+      error_detail: errorDetail.slice(0, 2000),
+      findings_count: 0,
+      critical_count: 0,
+      high_count: 0,
+      medium_count: 0,
+      low_count: 0,
+    })
+    .eq("id", scanId)
+    .eq("status", "pending")
+    .select("id");
+
+  if (error) {
+    console.error("[db] claimStrandedScan failed:", error.message);
+    return false;
+  }
+  return (data?.length ?? 0) > 0;
+}
+
+export async function markScanCreditRefunded(scanId: string): Promise<void> {
+  const {error} = await supabase
+    .from("scans")
+    .update({credit_refunded: true})
+    .eq("id", scanId);
+  if (error) console.error("[db] markScanCreditRefunded failed:", error.message);
+}
+
 export async function tryClaimScan(
   orgId: string,
   scanLimit: number,
