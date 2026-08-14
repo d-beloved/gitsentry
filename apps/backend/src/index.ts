@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import webhookRouter from "./webhooks/router";
 import sweepRouter from "./api/sweep";
 import rescanRouter from "./api/rescan";
+import {startReaper} from "./lib/reaper";
 
 const app = express();
 
@@ -58,6 +59,7 @@ const PORT = process.env.PORT || 3200;
 app.listen(PORT, () => {
   console.log(`Gitsentry.dev backend listening on port ${PORT}`);
   console.log(`Webhook endpoint: POST http://localhost:${PORT}/webhook`);
+  startReaper();
 });
 
 export default app;
