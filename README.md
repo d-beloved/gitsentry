@@ -120,7 +120,7 @@ Free and Starter plans receive no check run — findings are visible as PR comme
 - Node.js 20+
 - A GitHub App (see setup below)
 - Supabase project
-- Google Gemini API key
+- An API key for your AI provider (any Gemini-compatible or OpenAI-compatible endpoint)
 - Redis (optional — falls back to inline processing without it)
 
 ### 1. Create a GitHub App
@@ -151,8 +151,8 @@ GITHUB_WEBHOOK_SECRET=
 GITHUB_CLIENT_ID=
 GITHUB_CLIENT_SECRET=
 
-GEMINI_API_KEY=
-# ANTHROPIC_API_KEY=              # uncomment when switching to Claude
+AI_API_KEY=
+AI_SCAN_MODEL=                  # model string for PR scans — see apps/backend/.env.example
 
 SUPABASE_URL=
 SUPABASE_SECRET_KEY=
@@ -197,7 +197,7 @@ This repo is the **open-source scanner only**. Source lives under `apps/backend/
 apps/backend/src/
   webhooks/        ← webhook router + event handlers
   lib/
-    ai.ts          ← AI abstraction layer (Gemini; swap to Claude in one function)
+    ai.ts          ← AI abstraction layer (provider + models set via AI_* env vars)
     github.ts      ← Octokit wrapper
     differ.ts      ← diff parser and additions extractor
     scorer.ts      ← severity scoring

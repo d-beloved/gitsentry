@@ -33,7 +33,8 @@ function strandedScan(overrides: Partial<StrandedScanRow> = {}): StrandedScanRow
   return {
     id: "scan-1",
     repo_id: "repo-1",
-    created_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+    created_at: new Date(Date.now() - 90 * 60_000).toISOString(),
+    started_at: null,
     quota_claimed: true,
     credit_refunded: false,
     repos: { full_name: "acme/api" },
@@ -73,8 +74,8 @@ describe("reapStrandedScans", () => {
 
     expect(await reapStrandedScans()).toBe(1);
 
-    expect(mockClaim).toHaveBeenCalledWith("scan-1", expect.stringContaining("Stranded"));
-    expect(mockRefund).toHaveBeenCalledWith("org-1", "pro", "2026-08");
+    expect(mockClaim).toHaveBeenCalledWith("scan-1", expect.stringContaining("never picked up"));
+    expect(mockRefund).toHaveBeenCalledWith("org-1", "pro", "2026-08", false);
     expect(mockMarkRefunded).toHaveBeenCalledWith("scan-1");
     expect(mockNotify).toHaveBeenCalledWith("repo-1", "acme/api", "pipeline_error", true, "scan-1");
   });
@@ -125,16 +126,39 @@ describe("reapStrandedScans", () => {
     expect(mockNotify).toHaveBeenCalledWith("repo-1", "repo-1", "pipeline_error", true, "scan-1");
   });
 
-  it("honours SCAN_STRAND_TIMEOUT_MINUTES when computing the cutoff", async () => {
+  it("describes a mid-run death differently from a job that was never picked up", async () => {
+    mockGetStranded.mockResolvedValue([
+      strandedScan({ started_at: new Date(Date.now() - 20 * 60_000).toISOString() }),
+    ]);
+
+    await reapStrandedScans();
+
+    expect(mockClaim).toHaveBeenCalledWith("scan-1", expect.stringContaining("worker died mid-run"));
+  });
+
+  it("passes both cutoffs, and they honour their own env vars", async () => {
     mockGetStranded.mockResolvedValue([]);
-    process.env.SCAN_STRAND_TIMEOUT_MINUTES = "60";
+    process.env.SCAN_QUEUE_TIMEOUT_MINUTES = "90";
+    process.env.SCAN_STRAND_TIMEOUT_MINUTES = "20";
 
     const before = Date.now();
     await reapStrandedScans();
+    delete process.env.SCAN_QUEUE_TIMEOUT_MINUTES;
     delete process.env.SCAN_STRAND_TIMEOUT_MINUTES;
 
-    const cutoff = new Date(mockGetStranded.mock.calls[0][0]).getTime();
-    const expected = before - 60 * 60_000;
-    expect(Math.abs(cutoff - expected)).toBeLessThan(5_000);
+    const [queueCutoff, runCutoff] = mockGetStranded.mock.calls[0];
+    expect(Math.abs(new Date(queueCutoff).getTime() - (before - 90 * 60_000))).toBeLessThan(5_000);
+    expect(Math.abs(new Date(runCutoff).getTime() - (before - 20 * 60_000))).toBeLessThan(5_000);
+  });
+
+  it("defaults the queue clock well past the run clock", async () => {
+    mockGetStranded.mockResolvedValue([]);
+
+    await reapStrandedScans();
+
+    // A generous queue threshold is the whole defence against reaping a scan
+    // that is merely waiting its turn behind a slow backlog.
+    const [queueCutoff, runCutoff] = mockGetStranded.mock.calls[0];
+    expect(new Date(queueCutoff).getTime()).toBeLessThan(new Date(runCutoff).getTime());
   });
 });

@@ -21,15 +21,21 @@ jest.mock("../../notifier", () => ({
 }));
 jest.mock("../../../db/queries", () => ({
   saveFindings: jest.fn().mockResolvedValue([]),
-  updateScanStatus: jest.fn().mockResolvedValue(undefined),
+  // Returns true = "the row was written". A reaped row returns false, which is
+  // what stops the worker refunding or notifying a second time.
+  updateScanStatus: jest.fn().mockResolvedValue(true),
   getOrgByRepoId: jest.fn(),
   tryClaimScan: jest.fn(),
   getPreviousPRCommentId: jest.fn().mockResolvedValue(null),
+  getOpenPRFindings: jest.fn().mockResolvedValue([]),
   updateScanCommentId: jest.fn().mockResolvedValue(undefined),
   recordAiUsage: jest.fn().mockResolvedValue(undefined),
   scanQuotaAlreadyClaimed: jest.fn().mockResolvedValue(false),
   markScanQuotaClaimed: jest.fn().mockResolvedValue(undefined),
   refundScanSlot: jest.fn().mockResolvedValue(undefined),
+  // Default: we still own the scan and it has no prior refund.
+  markScanStarted: jest.fn().mockResolvedValue(true),
+  getScanRefundState: jest.fn().mockResolvedValue({quotaClaimed: false, creditRefunded: false}),
 }));
 
 import { processScanJob } from "../scanWorker";
@@ -40,7 +46,12 @@ import {
   tryClaimScan,
   refundScanSlot,
   scanQuotaAlreadyClaimed,
+  markScanStarted,
+  getScanRefundState,
+  getPreviousPRCommentId,
+  getOpenPRFindings,
 } from "../../../db/queries";
+import { postPRReview, postCheckRun } from "../../github";
 import { notifyScanFailure } from "../../notifier";
 
 const baseJob: ScanJobData = {
@@ -57,7 +68,18 @@ const baseJob: ScanJobData = {
   quotaAlreadyClaimed: false,
 } as ScanJobData;
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  // clearAllMocks wipes call history but leaves implementations in place, so a
+  // test that overrides one of these would otherwise leak into every test after
+  // it. Re-establish the happy-path defaults each time.
+  (markScanStarted as jest.Mock).mockResolvedValue(true);
+  (updateScanStatus as jest.Mock).mockResolvedValue(true);
+  (scanQuotaAlreadyClaimed as jest.Mock).mockResolvedValue(false);
+  (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: false, creditRefunded: false});
+  (getPreviousPRCommentId as jest.Mock).mockResolvedValue(null);
+  (getOpenPRFindings as jest.Mock).mockResolvedValue([]);
+});
 
 describe("processScanJob — scan outcomes", () => {
   it("skips (not fails) when the subscription has lapsed, without claiming a credit", async () => {
@@ -91,14 +113,15 @@ describe("processScanJob — scan outcomes", () => {
       id: "org-1", plan: "starter", subscription_status: "active", scan_month: "2026-07",
     });
     (tryClaimScan as jest.Mock).mockResolvedValue(true);
-    // First check (in the claim path) sees no prior claim; after the worker
-    // claims + marks it, the catch-block re-check sees the slot as claimed.
-    (scanQuotaAlreadyClaimed as jest.Mock).mockResolvedValueOnce(false).mockResolvedValue(true);
+    (scanQuotaAlreadyClaimed as jest.Mock).mockResolvedValue(false);
+    // After the worker claims + marks it, the catch block sees a claimed slot
+    // that has not yet been refunded.
+    (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: false});
     (analyzeCode as jest.Mock).mockRejectedValue(new Error("gemini exploded"));
 
     await expect(processScanJob(baseJob)).rejects.toThrow("gemini exploded");
 
-    expect(refundScanSlot).toHaveBeenCalledWith("org-1", "starter", "2026-07");
+    expect(refundScanSlot).toHaveBeenCalledWith("org-1", "starter", "2026-07", false);
     expect(updateScanStatus).toHaveBeenLastCalledWith(
       "scan-1", [], expect.any(Number), "failed",
       { failureReason: "pipeline_error", creditRefunded: true, errorDetail: expect.stringContaining("gemini exploded") },
@@ -112,7 +135,7 @@ describe("processScanJob — scan outcomes", () => {
     });
     (tryClaimScan as jest.Mock).mockResolvedValue(true);
     (analyzeCode as jest.Mock).mockResolvedValue({
-      issues: [], summary: "clean", tokens_in: 10, tokens_out: 5, model_name: "gemini-2.5-flash", coverage: null,
+      issues: [], summary: "clean", tokens_in: 10, tokens_out: 5, model_name: "test-model", coverage: null,
     });
 
     await processScanJob(baseJob);
@@ -121,7 +144,209 @@ describe("processScanJob — scan outcomes", () => {
     expect(notifyScanFailure).not.toHaveBeenCalled();
     expect(updateScanStatus).toHaveBeenLastCalledWith(
       "scan-1", [], expect.any(Number), "complete",
-      { tokensIn: 10, tokensOut: 5, modelName: "gemini-2.5-flash" },
+      { tokensIn: 10, tokensOut: 5, modelName: "test-model", examinedPaths: [] },
     );
+  });
+});
+
+describe("processScanJob — reaped scans", () => {
+  it("abandons the job without scanning when the reaper already closed the row", async () => {
+    (markScanStarted as jest.Mock).mockResolvedValue(false);
+
+    await expect(processScanJob(baseJob)).resolves.toBeUndefined();
+
+    // The whole point: no AI spend, no status write, no second refund, and no
+    // throw (which would send it back through Bull's retry).
+    expect(analyzeCode).not.toHaveBeenCalled();
+    expect(updateScanStatus).not.toHaveBeenCalled();
+    expect(refundScanSlot).not.toHaveBeenCalled();
+    expect(notifyScanFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not refund when the failing row was reaped mid-run", async () => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue({
+      id: "org-1", plan: "starter", subscription_status: "active", scan_month: "2026-07",
+    });
+    (tryClaimScan as jest.Mock).mockResolvedValue(true);
+    (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: false});
+    (analyzeCode as jest.Mock).mockRejectedValue(new Error("gemini exploded"));
+    // The reaper took the row while the scan was running, so the guarded write
+    // finds nothing to update.
+    (updateScanStatus as jest.Mock).mockResolvedValue(false);
+
+    await expect(processScanJob(baseJob)).rejects.toThrow("gemini exploded");
+
+    // The reaper already refunded this credit — refunding again would hand out
+    // a free scan.
+    expect(refundScanSlot).not.toHaveBeenCalled();
+    expect(notifyScanFailure).not.toHaveBeenCalled();
+  });
+});
+
+describe("processScanJob — refund is once per claimed slot", () => {
+  beforeEach(() => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue({
+      id: "org-1", plan: "starter", subscription_status: "active", scan_month: "2026-07",
+    });
+    (tryClaimScan as jest.Mock).mockResolvedValue(true);
+    (analyzeCode as jest.Mock).mockRejectedValue(new Error("gemini exploded"));
+  });
+
+  it("does not refund again on a Bull retry of an already-refunded scan", async () => {
+    (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: true});
+
+    await expect(processScanJob(baseJob)).rejects.toThrow("gemini exploded");
+
+    expect(refundScanSlot).not.toHaveBeenCalled();
+    expect(updateScanStatus).toHaveBeenLastCalledWith(
+      "scan-1", [], expect.any(Number), "failed",
+      expect.objectContaining({ creditRefunded: false }),
+    );
+  });
+
+  it("holds the slot when another attempt is still coming", async () => {
+    (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: false});
+
+    await expect(
+      processScanJob(baseJob, { isFinalAttempt: () => false }),
+    ).rejects.toThrow("gemini exploded");
+
+    // Releasing it here is what produced free scans: attempt 2 completes, and
+    // the success path never re-takes the slot.
+    expect(refundScanSlot).not.toHaveBeenCalled();
+    expect(notifyScanFailure).not.toHaveBeenCalled();
+    expect(updateScanStatus).toHaveBeenLastCalledWith(
+      "scan-1", [], expect.any(Number), "failed",
+      expect.objectContaining({ creditRefunded: false }),
+    );
+  });
+
+  it("refunds once the last attempt fails", async () => {
+    (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: false});
+
+    await expect(
+      processScanJob(baseJob, { isFinalAttempt: () => true }),
+    ).rejects.toThrow("gemini exploded");
+
+    expect(refundScanSlot).toHaveBeenCalledWith("org-1", "starter", "2026-07", false);
+    expect(notifyScanFailure).toHaveBeenCalled();
+  });
+
+  it("still refunds a caller-claimed slot, which never sets quota_claimed on the row", async () => {
+    (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: false, creditRefunded: false});
+
+    await expect(
+      processScanJob({ ...baseJob, quotaAlreadyClaimed: true }),
+    ).rejects.toThrow("gemini exploded");
+
+    expect(refundScanSlot).toHaveBeenCalledWith("org-1", "starter", "2026-07", false);
+  });
+});
+
+// A `synchronize` scan reads only the incremental diff. Before this, a follow-up
+// commit touching one unrelated file made the scan report zero findings, and the
+// worker rewrote the PR comment to "No security issues found" — retiring a real
+// HIGH nobody had fixed. The scan's blind spot must never read as an all-clear.
+describe("processScanJob — findings from earlier commits", () => {
+  // Touches src/x.ts and nothing else.
+  const incrementalDiff = [
+    "diff --git a/src/x.ts b/src/x.ts",
+    "index 1111111..2222222 100644",
+    "--- a/src/x.ts",
+    "+++ b/src/x.ts",
+    "@@ -1 +1,2 @@",
+    " const a = 1;",
+    "+const b = 2;",
+    "",
+  ].join("\n");
+
+  const openHigh = {
+    id: "finding-1",
+    severity: "high",
+    category: "missing_auth",
+    file_path: "api/rebuild.ts",
+    line_number: 28,
+    code_snippet: null,
+    description: "Unauthenticated rebuild trigger",
+    fix_suggestion: "Require the shared secret",
+  };
+
+  const syncJob = { ...baseJob, diff: incrementalDiff };
+
+  beforeEach(() => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue({
+      id: "org-1", plan: "pro", subscription_status: "active", scan_month: "2026-07",
+    });
+    (tryClaimScan as jest.Mock).mockResolvedValue(true);
+    (analyzeCode as jest.Mock).mockResolvedValue({
+      issues: [], summary: "clean", tokens_in: 1, tokens_out: 1, model_name: "m", coverage: null,
+    });
+    (getPreviousPRCommentId as jest.Mock).mockResolvedValue({commentId: 999, hadFindings: true});
+  });
+
+  it("reprints an open finding the scan never re-read instead of reporting clean", async () => {
+    (getOpenPRFindings as jest.Mock).mockResolvedValue([openHigh]);
+
+    await processScanJob(syncJob);
+
+    expect(postPRReview).toHaveBeenCalledTimes(1);
+    // 4th arg is `carried` — the finding survives into the updated comment.
+    expect((postPRReview as jest.Mock).mock.calls[0][3]).toEqual([openHigh]);
+  });
+
+  it("keeps the Pro check run red while a carried finding stands", async () => {
+    (getOpenPRFindings as jest.Mock).mockResolvedValue([openHigh]);
+
+    await processScanJob(syncJob);
+
+    expect((postCheckRun as jest.Mock).mock.calls[0][3]).toEqual([openHigh]);
+  });
+
+  it("supersedes only the files it actually examined", async () => {
+    (getOpenPRFindings as jest.Mock).mockResolvedValue([openHigh]);
+
+    await processScanJob(syncJob);
+
+    expect(updateScanStatus).toHaveBeenLastCalledWith(
+      "scan-1", [], expect.any(Number), "complete",
+      expect.objectContaining({ examinedPaths: ["src/x.ts"] }),
+    );
+  });
+
+  it("lets a finding go once a commit touches the file it lives in", async () => {
+    // Same scan, but this time the diff covers the file the finding is in and
+    // the scanner no longer reports it — that is a real fix, so it clears.
+    (getOpenPRFindings as jest.Mock).mockResolvedValue([
+      { ...openHigh, file_path: "src/x.ts" },
+    ]);
+
+    await processScanJob(syncJob);
+
+    expect((postPRReview as jest.Mock).mock.calls[0][3]).toEqual([]);
+    expect((postCheckRun as jest.Mock).mock.calls[0][3]).toEqual([]);
+  });
+
+  it("still skips the redundant update when nothing is open and the comment is already clean", async () => {
+    (getPreviousPRCommentId as jest.Mock).mockResolvedValue({commentId: 999, hadFindings: false});
+    (getOpenPRFindings as jest.Mock).mockResolvedValue([]);
+
+    await processScanJob(syncJob);
+
+    expect(postPRReview).not.toHaveBeenCalled();
+  });
+
+  it("updates a comment that is showing carried findings once they are gone", async () => {
+    // The previous scan reported nothing of its own (hadFindings false) but its
+    // comment was displaying a carried finding. That finding has since been
+    // fixed, so the comment has to be refreshed rather than left frozen.
+    (getPreviousPRCommentId as jest.Mock).mockResolvedValue({commentId: 999, hadFindings: false});
+    (getOpenPRFindings as jest.Mock).mockResolvedValue([
+      { ...openHigh, file_path: "src/x.ts" },
+    ]);
+
+    await processScanJob(syncJob);
+
+    expect(postPRReview).toHaveBeenCalledTimes(1);
+    expect((postPRReview as jest.Mock).mock.calls[0][3]).toEqual([]);
   });
 });

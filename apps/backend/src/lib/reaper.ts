@@ -23,9 +23,28 @@ import { notifyScanFailure } from "./notifier";
  * could post a duplicate PR review. Instead it closes the row out truthfully —
  * 'failed' with a refund — which is the same contract the worker's own catch
  * block honours, and leaves the customer free to trigger a rescan.
+ *
+ * Two clocks, not one (migration 007). Judging every row by `created_at` could
+ * not tell a dropped job from one legitimately queued behind a backlog, and with
+ * the Bull worker at concurrency 1 that backlog is real — one scan hitting the AI
+ * timeout holds the queue for minutes. Reaping a healthy queued scan refunded a
+ * credit and sent a failure notice for a scan that then completed normally. So a
+ * row that was never picked up (started_at IS NULL) is judged by queue age with a
+ * deliberately generous threshold, and one whose worker died mid-run is judged by
+ * run age. Should a healthy scan still be reaped past even the queue threshold,
+ * reaped_at stops the worker from resurrecting the row — see markScanStarted.
  */
 
-const DEFAULT_STRAND_MINUTES = 15;
+// How long a job may sit unclaimed in the queue before we call it dropped. This
+// has to clear the worst realistic queue wait, not the worst scan: the Bull
+// worker runs at concurrency 1, so a backlog of slow scans legitimately keeps
+// later ones 'pending' for a long time, and reaping one of those refunds a scan
+// that then goes on to succeed.
+const DEFAULT_QUEUE_MINUTES = 60;
+// How long a single attempt may run before we call the worker dead. Measured
+// from this attempt's pickup, so it bounds one run, not the whole retry chain —
+// no healthy scan comes close, which is why it can stay tight.
+const DEFAULT_RUN_MINUTES = 15;
 const DEFAULT_INTERVAL_MINUTES = 5;
 const BATCH_LIMIT = 50;
 
@@ -51,27 +70,34 @@ let inFlight = false;
  * counted, because this process didn't win the claim.
  */
 export async function reapStrandedScans(): Promise<number> {
-  const strandMinutes = envMinutes("SCAN_STRAND_TIMEOUT_MINUTES", DEFAULT_STRAND_MINUTES);
-  const cutoff = new Date(Date.now() - strandMinutes * 60_000).toISOString();
+  const queueMinutes = envMinutes("SCAN_QUEUE_TIMEOUT_MINUTES", DEFAULT_QUEUE_MINUTES);
+  const runMinutes = envMinutes("SCAN_STRAND_TIMEOUT_MINUTES", DEFAULT_RUN_MINUTES);
+  const now = Date.now();
+  const queueCutoff = new Date(now - queueMinutes * 60_000).toISOString();
+  const runCutoff = new Date(now - runMinutes * 60_000).toISOString();
 
-  const stranded = await getStrandedScans(cutoff, BATCH_LIMIT);
+  const stranded = await getStrandedScans(queueCutoff, runCutoff, BATCH_LIMIT);
   if (stranded.length === 0) return 0;
 
   console.warn(
-    `[reaper] Found ${stranded.length} scan(s) stuck in 'pending' for over ${strandMinutes}m`,
+    `[reaper] Found ${stranded.length} stranded scan(s) — never picked up after ${queueMinutes}m, or running over ${runMinutes}m`,
   );
 
   let reaped = 0;
+  const minutesSince = (iso: string): number =>
+    Math.round((Date.now() - new Date(iso).getTime()) / 60_000);
 
   for (const scan of stranded) {
     const repoFullName = scan.repos?.full_name ?? scan.repo_id;
-    const ageMinutes = Math.round((Date.now() - new Date(scan.created_at).getTime()) / 60_000);
+    const ageMinutes = minutesSince(scan.created_at);
+    // Which clock caught it decides what actually went wrong, and the admin
+    // reading error_detail later needs that distinction to act on it.
+    const detail = scan.started_at
+      ? `Stranded: picked up ${minutesSince(scan.started_at)}m ago and never finished — the worker died mid-run.`
+      : `Stranded: still 'pending' ${ageMinutes}m after creation and never picked up — the queued job was dropped.`;
 
     try {
-      const won = await claimStrandedScan(
-        scan.id,
-        `Stranded: still 'pending' ${ageMinutes}m after creation — the queued job was never processed to completion.`,
-      );
+      const won = await claimStrandedScan(scan.id, detail);
       // Someone else closed it out between the read and the update.
       if (!won) continue;
 
@@ -83,7 +109,10 @@ export async function reapStrandedScans(): Promise<number> {
       if (scan.quota_claimed && !scan.credit_refunded) {
         const org = await getOrgByRepoId(scan.repo_id).catch(() => null);
         if (org) {
-          await refundScanSlot(org.id, org.plan ?? "free", org.scan_month ?? null).catch(() => {});
+          await refundScanSlot(
+            org.id, org.plan ?? "free", org.scan_month ?? null,
+            !!org.paddle_subscription_id,
+          ).catch(() => {});
           await markScanCreditRefunded(scan.id);
           creditRefunded = true;
         }
@@ -119,7 +148,8 @@ export function startReaper(): NodeJS.Timeout | null {
   }
 
   const intervalMinutes = envMinutes("SCAN_REAPER_INTERVAL_MINUTES", DEFAULT_INTERVAL_MINUTES);
-  const strandMinutes = envMinutes("SCAN_STRAND_TIMEOUT_MINUTES", DEFAULT_STRAND_MINUTES);
+  const queueMinutes = envMinutes("SCAN_QUEUE_TIMEOUT_MINUTES", DEFAULT_QUEUE_MINUTES);
+  const runMinutes = envMinutes("SCAN_STRAND_TIMEOUT_MINUTES", DEFAULT_RUN_MINUTES);
 
   const tick = (): void => {
     if (inFlight) return;
@@ -136,7 +166,7 @@ export function startReaper(): NodeJS.Timeout | null {
   timer.unref();
 
   console.log(
-    `[reaper] Started — every ${intervalMinutes}m, reaping scans pending over ${strandMinutes}m`,
+    `[reaper] Started — every ${intervalMinutes}m, reaping scans never picked up after ${queueMinutes}m or running over ${runMinutes}m`,
   );
 
   return timer;

@@ -69,7 +69,12 @@ router.post(
     // Atomically claim a scan slot before doing any GitHub API work (all plans,
     // including Pro which is capped at 500/month).
     // quotaAlreadyClaimed is set on the job so the worker skips its own claim.
-    const claimed = org ? await tryClaimScan(org.id, scanLimit, plan, org.scan_month ?? null) : false;
+    const claimed = org
+      ? await tryClaimScan(
+          org.id, scanLimit, plan, org.scan_month ?? null,
+          !!org.paddle_subscription_id,
+        )
+      : false;
     if (!claimed) {
       res.status(402).json({
         error: `Monthly scan limit reached on the ${plan} plan (${scanLimit}/month).`,

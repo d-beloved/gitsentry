@@ -14,7 +14,7 @@ import {
   refundMonthlySweep,
   recordAiUsage,
 } from "../db/queries";
-import {truncateDiff} from "../lib/differ";
+import {truncateDiff, extractScannablePaths} from "../lib/differ";
 
 const router = express.Router();
 
@@ -103,7 +103,10 @@ router.post(
     } else {
       // Starter (1/month) and Pro (10/month) use the monthly quota
       const sweepLimit = SWEEP_LIMITS[plan] ?? 1;
-      claimedSweep = await tryClaimMonthlySweep(org.id, sweepLimit, plan, org.sweep_month ?? null);
+      claimedSweep = await tryClaimMonthlySweep(
+        org.id, sweepLimit, plan, org.sweep_month ?? null,
+        !!org.paddle_subscription_id,
+      );
       usedMonthlyQuota = true;
       if (!claimedSweep) {
         const limitLabel = sweepLimit === 1 ? "1 sweep" : `${sweepLimit} sweeps`;
@@ -185,6 +188,9 @@ router.post(
         tokensIn: tokens_in,
         tokensOut: tokens_out,
         modelName: model_name,
+        // A sweep reads the whole branch slice it was given, so everything in
+        // that diff is fair game to supersede from the previous sweep.
+        examinedPaths: extractScannablePaths(diff),
       });
 
       res.json({

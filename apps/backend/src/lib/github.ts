@@ -102,6 +102,9 @@ export async function postPRReview(
   repoFullName: string,
   prNumber: number,
   issues: Finding[],
+  /** Required, not defaulted: a caller that forgets this silently reverts to
+   * overwriting a findings comment with an all-clear. Pass [] to say so. */
+  carried: Finding[],
   summary: string,
   scanId: string,
   installationId: number,
@@ -111,7 +114,7 @@ export async function postPRReview(
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const body = formatReviewBody(issues, summary, scanId, !!existingCommentId, coverage);
+  const body = formatReviewBody(issues, carried, summary, scanId, !!existingCommentId, coverage);
 
   if (existingCommentId) {
     const {data} = await octokit.request(
@@ -139,7 +142,9 @@ export async function postCommitComment(
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const body = formatReviewBody(issues, summary, scanId);
+  // Nothing carried: a push scan posts a fresh comment per commit rather than
+  // editing an earlier one, so it can never overwrite a prior result.
+  const body = formatReviewBody(issues, [], summary, scanId);
 
   await octokit.request(
     "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments",
@@ -175,8 +180,37 @@ function formatCoverageNote(coverage?: ScanCoverage): string {
   return `> ⚠️ Large PR — surrounding context lines were reduced to fit the diff size budget. All ${coverage.filesTotal} changed files were scanned.\n\n`;
 }
 
-function formatReviewBody(
+function formatIssue(issue: Finding): string {
+  const emoji = SEVERITY_EMOJI[issue.severity] || "⚪";
+  const label = CATEGORY_LABELS[issue.category] || issue.category;
+
+  let out = `### ${emoji} ${issue.severity.toUpperCase()} — ${label}\n`;
+  out += `**File:** \`${issue.file_path}\``;
+  if (issue.line_number) out += ` · **Line:** ${issue.line_number}`;
+  out += "\n\n";
+
+  if (issue.code_snippet) {
+    const ext = issue.file_path.split(".").pop() || "";
+    out += `\`\`\`${ext}\n${issue.code_snippet}\n\`\`\`\n\n`;
+  }
+
+  out += `**Issue:** ${issue.description}\n\n`;
+  out += `**Fix:** ${issue.fix_suggestion}\n\n`;
+  out += `---\n\n`;
+  return out;
+}
+
+/**
+ * @param issues  findings raised by the scan that just ran
+ * @param carried findings from earlier scans of this PR that are still open and
+ *                that this scan did not re-read (its diff never touched their
+ *                file). They are reprinted so updating the comment in place can
+ *                never downgrade a PR to "clean" on the strength of a scan that
+ *                only saw an unrelated slice of it.
+ */
+export function formatReviewBody(
   issues: Finding[],
+  carried: Finding[],
   summary: string,
   scanId: string,
   isUpdate = false,
@@ -184,7 +218,7 @@ function formatReviewBody(
 ): string {
   let body = `## 🔐 ${PRODUCT_NAME} Security Scan\n\n`;
 
-  if (issues.length === 0) {
+  if (issues.length === 0 && carried.length === 0) {
     body += formatCoverageNote(coverage);
     body += `**No security issues found** in this PR. ✅\n\n`;
     body += formatFooter(summary, scanId, isUpdate);
@@ -192,35 +226,30 @@ function formatReviewBody(
   }
   body += formatCoverageNote(coverage);
 
-  const sorted = sortBySeverity(issues);
-  const counts = countBySeverity(issues);
+  const total = issues.length + carried.length;
+  const counts = countBySeverity([...issues, ...carried]);
 
   const countParts = (["critical", "high", "medium", "low"] as const)
     .filter((s) => counts[s] > 0)
     .map((s) => `${counts[s]} ${s}`);
 
-  body += `Found **${issues.length} issue${issues.length !== 1 ? "s" : ""}** in this PR`;
+  body += `Found **${total} issue${total !== 1 ? "s" : ""}** in this PR`;
   if (countParts.length) body += ` (${countParts.join(", ")})`;
   body += `\n\n---\n\n`;
 
-  for (const issue of sorted) {
-    const emoji = SEVERITY_EMOJI[issue.severity] || "⚪";
-    const label = CATEGORY_LABELS[issue.category] || issue.category;
+  // Only label the sections when there is something to tell apart — a first
+  // scan, or any scan that saw the whole PR, still reads exactly as before.
+  if (issues.length && carried.length) {
+    body += `#### Introduced by the latest commits\n\n`;
+  }
+  for (const issue of sortBySeverity(issues)) body += formatIssue(issue);
 
-    body += `### ${emoji} ${issue.severity.toUpperCase()} — ${label}\n`;
-    body += `**File:** \`${issue.file_path}\``;
-    if (issue.line_number) body += ` · **Line:** ${issue.line_number}`;
-    body += "\n\n";
-
-    if (issue.code_snippet) {
-      const ext = issue.file_path.split(".").pop() || "";
-      body += `\`\`\`${ext}\n${issue.code_snippet}\n\`\`\`\n\n`;
-    }
-
-    body += `**Issue:** ${issue.description}\n\n`;
-    body += `**Fix:** ${issue.fix_suggestion}\n\n`;
-
-    body += `---\n\n`;
+  if (carried.length) {
+    body += `#### Still open from earlier commits\n\n`;
+    body += issues.length === 0
+      ? `> The latest commits are clean, but these issues from earlier in the PR have not been addressed. This scan did not re-read the files they live in, so they stand until a commit touches that code.\n\n`
+      : `> Raised by an earlier scan of this PR and not yet addressed. Line numbers are from the commit that raised them and may have shifted.\n\n`;
+    for (const issue of sortBySeverity(carried)) body += formatIssue(issue);
   }
 
   body += formatFooter(summary, scanId, isUpdate);
@@ -277,12 +306,17 @@ export async function postCheckRun(
   repoFullName: string,
   headSha: string,
   findings: Finding[],
+  /** Still-open findings from earlier scans of this PR — see postPRReview. The
+   * gate has to count them, or a follow-up commit touching an unrelated file
+   * turns the check green while the issue is still in the branch. Required for
+   * the same reason: forgetting it must not quietly pass the PR. */
+  carried: Finding[],
   installationId: number,
 ): Promise<void> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const total = findings.length;
+  const total = findings.length + carried.length;
 
   let conclusion: string;
   let title: string;

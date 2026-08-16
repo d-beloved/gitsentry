@@ -78,4 +78,7 @@ export interface OrgWithUsage extends OrgSummary {
   sweep_trials_used: number;
   sweep_count_month: number | null;
   sweep_month: string | null;
+  // Needed to tell a real subscription from a hand-granted plan: only the former
+  // has a Paddle renewal to reset its counters. See lib/quotaPeriod.ts.
+  paddle_subscription_id: string | null;
 }

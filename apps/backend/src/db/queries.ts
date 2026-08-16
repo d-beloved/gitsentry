@@ -1,5 +1,6 @@
 import {supabase} from "./client";
 import {countBySeverity} from "../lib/scorer";
+import {effectiveQuotaPeriod} from "../lib/quotaPeriod";
 import type {Finding} from "../../../../packages/scanner-contract/types";
 import type {
   OrgRow,
@@ -65,7 +66,7 @@ export async function getOrgByInstallationId(
 ): Promise<OrgWithUsage | null> {
   const {data} = await supabase
     .from("installations")
-    .select("org_id, orgs(id, plan, subscription_status, scan_count_month, scan_month, sweep_trials_used, sweep_count_month, sweep_month)")
+    .select("org_id, orgs(id, plan, subscription_status, scan_count_month, scan_month, sweep_trials_used, sweep_count_month, sweep_month, paddle_subscription_id)")
     .eq("github_install_id", installationId)
     .single();
   return (data?.orgs as unknown as OrgWithUsage) ?? null;
@@ -194,14 +195,21 @@ export async function updateScanStatus(
     creditRefunded?: boolean;
     /** Raw exception message for admin diagnosis — never shown to customers. */
     errorDetail?: string;
+    /**
+     * The files this scan actually looked at. Only findings living in one of
+     * these paths can be superseded by this scan's result — see
+     * markStaleFindings. Omitting it supersedes nothing, which is the safe
+     * default for callers that never ran a diff (skips, failures).
+     */
+    examinedPaths?: string[];
   },
-): Promise<void> {
+): Promise<boolean> {
   const {critical, high, medium, low} = countBySeverity(issues);
   const hasTokens = opts?.tokensIn != null || opts?.tokensOut != null;
   // Cap so one runaway error (e.g. a stringified HTML error page) can't bloat the row.
   const errorDetail = opts?.errorDetail?.slice(0, 2000) ?? null;
 
-  const {error} = await supabase
+  const {data, error} = await supabase
     .from("scans")
     .update({
       status,
@@ -218,18 +226,36 @@ export async function updateScanStatus(
       ...(opts?.creditRefunded != null ? { credit_refunded: opts.creditRefunded } : {}),
       ...(hasTokens ? { tokens_in: opts?.tokensIn ?? 0, tokens_out: opts?.tokensOut ?? 0, ai_model: opts?.modelName ?? null } : {}),
     })
-    .eq("id", scanId);
+    .eq("id", scanId)
+    // Tombstone guard (migration 007). The reaper has already closed this row out
+    // and refunded the credit; a worker that finishes afterwards must not flip it
+    // back to 'complete' and post results against a scan the customer was told
+    // had failed. Deliberately keyed on reaped_at and NOT on status: a scan that
+    // failed on Bull attempt 1 has status='failed' with reaped_at NULL, and its
+    // retry must still be able to overwrite that failure on success.
+    .is("reaped_at", null)
+    .select("id");
 
   if (error) throw new Error(`updateScanStatus: ${error.message}`);
+
+  const written = (data?.length ?? 0) > 0;
+  if (!written) {
+    console.warn(
+      `[db] updateScanStatus(${status}) skipped for scan ${scanId} — row was reaped`,
+    );
+    return false;
+  }
 
   if (status === "complete") {
     updatePublicStats({findings: issues.length, critical}).catch((err) => {
       console.error("[stats] update failed:", err);
     });
-    markStaleFindings(scanId).catch((err) => {
+    markStaleFindings(scanId, opts?.examinedPaths ?? []).catch((err) => {
       console.error("[staleness] mark stale failed:", err);
     });
   }
+
+  return true;
 }
 
 // ─── AI usage ledger ────────────────────────────────────────────────────────────
@@ -397,9 +423,30 @@ async function updatePublicStats(params: {
   if (error) throw new Error(`updatePublicStats: ${error.message}`);
 }
 
-// Marks open findings from previous scans of the same repo+trigger as stale
-// when a newer scan completes. Called automatically after every successful scan.
-async function markStaleFindings(scanId: string): Promise<void> {
+/**
+ * Marks open findings from previous scans of the same repo+trigger as stale when
+ * a newer scan completes — but ONLY those living in a file the new scan actually
+ * examined (`examinedPaths`).
+ *
+ * The scope matters because a `synchronize` scan reads the incremental diff
+ * (see handlePR), so a follow-up commit that touches one unrelated file used to
+ * retire every finding on the PR — including ones in files the scanner never
+ * re-read. That is how a real HIGH could be silently retired by a six-line
+ * README fix. "The newest scan didn't report it" is only evidence of a fix when
+ * the newest scan looked at the file in the first place.
+ *
+ * A file deleted by this scan's diff still appears in examinedPaths
+ * (extractScannablePaths counts deletions), so removing vulnerable code retires
+ * its findings exactly as it should.
+ *
+ * Passing an empty examinedPaths supersedes nothing — the safe default.
+ */
+async function markStaleFindings(
+  scanId: string,
+  examinedPaths: string[],
+): Promise<void> {
+  if (!examinedPaths.length) return;
+
   const {data: scan} = await supabase
     .from("scans")
     .select("repo_id, trigger_ref, trigger_type")
@@ -423,9 +470,48 @@ async function markStaleFindings(scanId: string): Promise<void> {
     .from("findings")
     .update({is_stale: true})
     .in("scan_id", prevScans.map((s) => (s as {id: string}).id))
+    .in("file_path", examinedPaths)
     .eq("is_resolved", false)
     .eq("is_false_positive", false)
     .eq("is_stale", false);
+}
+
+/**
+ * Open findings raised by earlier scans of the same PR that are still live:
+ * not resolved, not dismissed, and not superseded by a later scan that re-read
+ * their file. The worker carries these into the PR comment so a scan of a
+ * narrow incremental diff can't present the PR as clean.
+ */
+export async function getOpenPRFindings(
+  repoId: string,
+  prNumber: number,
+  excludeScanId: string,
+): Promise<Finding[]> {
+  const {data: priorScans} = await supabase
+    .from("scans")
+    .select("id")
+    .eq("repo_id", repoId)
+    .eq("trigger_type", "pull_request")
+    .eq("trigger_ref", String(prNumber))
+    .eq("status", "complete")
+    .neq("id", excludeScanId);
+
+  if (!priorScans?.length) return [];
+
+  const {data, error} = await supabase
+    .from("findings")
+    .select("*")
+    .in("scan_id", priorScans.map((s) => (s as {id: string}).id))
+    .eq("is_resolved", false)
+    .eq("is_false_positive", false)
+    .eq("is_stale", false);
+
+  if (error) {
+    console.error("[findings] getOpenPRFindings failed:", error.message);
+    return [];
+  }
+
+  return (data ?? []) as Finding[];
 }
 
 async function getPublicStats(): Promise<PublicStatsRow | null> {
@@ -509,10 +595,13 @@ export async function tryClaimMonthlySweep(
   sweepLimit: number,
   plan: string = "free",
   storedSweepMonth: string | null = null,
+  hasPaddleSubscription: boolean = false,
 ): Promise<boolean> {
-  // Free: reset on calendar month. Paid: pass stored value so only Paddle resets.
-  const effectiveMonth =
-    plan === "free" ? new Date().toISOString().slice(0, 7) : storedSweepMonth;
+  const effectiveMonth = effectiveQuotaPeriod({
+    plan,
+    anchor: storedSweepMonth,
+    hasPaddleSubscription,
+  });
   const {data, error} = await supabase.rpc("try_claim_sweep", {
     p_org_id: orgId,
     p_month: effectiveMonth,
@@ -545,7 +634,7 @@ export async function getOrgByRepoId(
   const {data, error} = await supabase
     .from("repos")
     .select(
-      "org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used, sweep_count_month, sweep_month, subscription_status)",
+      "org_id, orgs(id, plan, scan_count_month, scan_month, sweep_trials_used, sweep_count_month, sweep_month, subscription_status, paddle_subscription_id)",
     )
     .eq("id", repoId)
     .single();
@@ -692,29 +781,121 @@ export interface StrandedScanRow {
   id: string;
   repo_id: string;
   created_at: string;
+  /** Null until the worker picks the job up. See markScanStarted. */
+  started_at: string | null;
   quota_claimed: boolean | null;
   credit_refunded: boolean | null;
   repos: {full_name: string} | null;
 }
 
-/** Scans still 'pending' well past any plausible run time, oldest first. */
+const STRANDED_COLUMNS =
+  "id, repo_id, created_at, started_at, quota_claimed, credit_refunded, repos(full_name)";
+
+/**
+ * Scans that are stuck rather than merely waiting. The two cases need different
+ * clocks, so they are two queries rather than one cutoff:
+ *
+ *   never consumed (started_at IS NULL)  — judged by queue age. A job Redis
+ *     dropped looks identical to one queued behind a backlog, so this threshold
+ *     has to sit beyond any plausible queue wait (see SCAN_QUEUE_TIMEOUT_MINUTES).
+ *
+ *   died mid-run (started_at IS NOT NULL) — judged by run age, measured from the
+ *     current attempt's pickup. No healthy scan runs this long, so this one can
+ *     be tight without risking a false positive.
+ *
+ * The sets are disjoint by construction (started_at null vs not null), so the
+ * union needs no dedup.
+ */
 export async function getStrandedScans(
-  cutoffIso: string,
+  queueCutoffIso: string,
+  runCutoffIso: string,
   limit: number,
 ): Promise<StrandedScanRow[]> {
+  const [neverStarted, stalledMidRun] = await Promise.all([
+    supabase
+      .from("scans")
+      .select(STRANDED_COLUMNS)
+      .eq("status", "pending")
+      .is("started_at", null)
+      .lt("created_at", queueCutoffIso)
+      .order("created_at", {ascending: true})
+      .limit(limit),
+    supabase
+      .from("scans")
+      .select(STRANDED_COLUMNS)
+      .eq("status", "pending")
+      .not("started_at", "is", null)
+      .lt("started_at", runCutoffIso)
+      .order("started_at", {ascending: true})
+      .limit(limit),
+  ]);
+
+  if (neverStarted.error) {
+    console.error("[db] getStrandedScans (never started) failed:", neverStarted.error.message);
+  }
+  if (stalledMidRun.error) {
+    console.error("[db] getStrandedScans (stalled mid-run) failed:", stalledMidRun.error.message);
+  }
+
+  const rows = [
+    ...((neverStarted.data ?? []) as unknown as StrandedScanRow[]),
+    ...((stalledMidRun.data ?? []) as unknown as StrandedScanRow[]),
+  ];
+
+  // Oldest first across both sets, and re-cap: each query applied `limit`
+  // independently, so the union can be up to 2x it.
+  return rows
+    .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+    .slice(0, limit);
+}
+
+/**
+ * Stamps the current attempt's pickup time, and doubles as the worker's
+ * permission check: the `reaped_at IS NULL` filter means a scan the reaper has
+ * already closed out returns false, and the worker abandons it before spending
+ * a single AI token on results nobody will accept.
+ *
+ * Re-stamped on every Bull retry on purpose — started_at means "this attempt
+ * began at", which is what the run-age threshold above needs.
+ */
+export async function markScanStarted(scanId: string): Promise<boolean> {
   const {data, error} = await supabase
     .from("scans")
-    .select("id, repo_id, created_at, quota_claimed, credit_refunded, repos(full_name)")
-    .eq("status", "pending")
-    .lt("created_at", cutoffIso)
-    .order("created_at", {ascending: true})
-    .limit(limit);
+    .update({started_at: new Date().toISOString()})
+    .eq("id", scanId)
+    .is("reaped_at", null)
+    .select("id");
 
   if (error) {
-    console.error("[db] getStrandedScans failed:", error.message);
-    return [];
+    // Fail open: a stamping failure must not stop a scan that is otherwise fine.
+    // Worst case the reaper judges this row by queue age, which is the old behaviour.
+    console.error("[db] markScanStarted failed:", error.message);
+    return true;
   }
-  return (data ?? []) as unknown as StrandedScanRow[];
+  return (data?.length ?? 0) > 0;
+}
+
+/** Quota bookkeeping flags, read together so a retry can't double-refund. */
+export async function getScanRefundState(
+  scanId: string,
+): Promise<{quotaClaimed: boolean; creditRefunded: boolean}> {
+  const {data, error} = await supabase
+    .from("scans")
+    .select("quota_claimed, credit_refunded")
+    .eq("id", scanId)
+    .single();
+
+  if (error) {
+    // Unknown state — claim "already refunded" so we err towards not refunding
+    // twice. An unrefunded credit is recoverable by support; an over-refund
+    // silently hands out free scans.
+    console.error("[db] getScanRefundState failed:", error.message);
+    return {quotaClaimed: false, creditRefunded: true};
+  }
+  return {
+    quotaClaimed: !!data?.quota_claimed,
+    creditRefunded: !!data?.credit_refunded,
+  };
 }
 
 /**
@@ -734,6 +915,9 @@ export async function claimStrandedScan(
       status: "failed",
       failure_reason: "pipeline_error",
       error_detail: errorDetail.slice(0, 2000),
+      // Tombstone (migration 007) — updateScanStatus refuses to write once this
+      // is set, so a worker that wakes up later cannot undo this row.
+      reaped_at: new Date().toISOString(),
       findings_count: 0,
       critical_count: 0,
       high_count: 0,
@@ -764,14 +948,13 @@ export async function tryClaimScan(
   scanLimit: number,
   plan: string = "free",
   storedScanMonth: string | null = null,
+  hasPaddleSubscription: boolean = false,
 ): Promise<boolean> {
-  // Free: reset on calendar month. Paid: use the stored billing-period month so
-  // only Paddle's webhook resets the counter — not the calendar.
-  // If storedScanMonth is empty/null (new org or first scan after subscribe), fall
-  // back to the current calendar month so scan_month gets initialised properly.
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const effectiveMonth =
-    plan === "free" || !storedScanMonth ? currentMonth : storedScanMonth;
+  const effectiveMonth = effectiveQuotaPeriod({
+    plan,
+    anchor: storedScanMonth,
+    hasPaddleSubscription,
+  });
   const {data, error} = await supabase.rpc("try_claim_scan", {
     p_org_id: orgId,
     p_month: effectiveMonth,
@@ -798,10 +981,13 @@ export async function refundScanSlot(
   orgId: string,
   plan: string = "free",
   storedScanMonth: string | null = null,
+  hasPaddleSubscription: boolean = false,
 ): Promise<void> {
-  const currentMonth = new Date().toISOString().slice(0, 7);
-  const effectiveMonth =
-    plan === "free" || !storedScanMonth ? currentMonth : storedScanMonth;
+  const effectiveMonth = effectiveQuotaPeriod({
+    plan,
+    anchor: storedScanMonth,
+    hasPaddleSubscription,
+  });
   const {error} = await supabase.rpc("refund_scan", {
     p_org_id: orgId,
     p_month: effectiveMonth,

@@ -11,14 +11,14 @@
 -- share with another surface.
 --
 -- surface values in use:
---   'pr_scan'            — apps/backend: per-PR diff scan (GEMINI_SCAN_MODEL)
---   'security_sweep'     — apps/backend: manual/scheduled deep sweep (GEMINI_SWEEP_MODEL)
---   'discovery'          — apps/backend: one-time repo auth-file analysis (GEMINI_DISCOVERY_MODEL)
---   'classifier'         — apps/backend: per-scan project-type classification (GEMINI_DISCOVERY_MODEL)
---   'outreach_sweep'     — apps/web: cold-outreach target vulnerability sweep (GEMINI_OUTREACH_MODEL)
---   'outreach_classifier'— apps/web: project-type classification for the above (GEMINI_OUTREACH_MODEL)
---   'outreach_summary'   — apps/web: company/repo summary enrichment (GEMINI_OUTREACH_MODEL)
---   'social_post'        — apps/web: social post generation (GEMINI_SOCIAL_MODEL)
+--   'pr_scan'            — apps/backend: per-PR diff scan (AI_SCAN_MODEL)
+--   'security_sweep'     — apps/backend: manual/scheduled deep sweep (AI_SWEEP_MODEL)
+--   'discovery'          — apps/backend: one-time repo auth-file analysis (AI_DISCOVERY_MODEL)
+--   'classifier'         — apps/backend: per-scan project-type classification (AI_DISCOVERY_MODEL)
+--   'outreach_sweep'     — apps/web: cold-outreach target vulnerability sweep (AI_OUTREACH_MODEL)
+--   'outreach_classifier'— apps/web: project-type classification for the above (AI_OUTREACH_MODEL)
+--   'outreach_summary'   — apps/web: company/repo summary enrichment (AI_OUTREACH_MODEL)
+--   'social_post'        — apps/web: social post generation (AI_SOCIAL_MODEL)
 
 CREATE TABLE IF NOT EXISTS ai_usage (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),

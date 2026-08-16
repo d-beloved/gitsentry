@@ -9,7 +9,7 @@ yarn eval                      # full pipeline: scan + verifier + secrets detect
 VERIFY_FINDINGS=off yarn eval  # A/B the verification pass
 ```
 
-Needs the backend env (`apps/backend/.env` with `GEMINI_API_KEY` + model vars).
+Needs the backend env (`apps/backend/.env` with `AI_API_KEY` + model vars).
 No database or GitHub access required.
 
 ## Metrics

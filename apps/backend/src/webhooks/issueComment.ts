@@ -56,7 +56,12 @@ export async function handleIssueComment(
 
   // Quota check — all plans including Pro (capped at 500/month)
   const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
-  const claimed = org ? await tryClaimScan(org.id, scanLimit, plan, org.scan_month ?? null) : false;
+  const claimed = org
+    ? await tryClaimScan(
+        org.id, scanLimit, plan, org.scan_month ?? null,
+        !!org.paddle_subscription_id,
+      )
+    : false;
 
   if (!claimed) {
     await octokit.request(

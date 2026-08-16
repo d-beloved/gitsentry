@@ -2,29 +2,35 @@ import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/gen
 import { extractScannerInput, extractScannablePaths } from "./differ";
 import { detectSecretsInDiff, mergeSecretFindings } from "./secretsDetector";
 import { verifyFindings } from "./verifier";
+import { withAIDeadline } from "./aiDeadline";
+import { aiEnv, requireAiEnv } from "./aiEnv";
+
+// Re-exported so callers have one place to import AI error types from.
+export { AITimeoutError } from "./aiDeadline";
 import type { AIAnalysisResult, ScanContext, ScanCoverage } from "../../../../packages/scanner-contract/types";
 import type { ProjectClassification } from "../../../../packages/scanner-contract/scanner-rules";
 import { PROJECT_TYPE_RULES, isTestScaffolding } from "../../../../packages/scanner-contract/scanner-rules";
 import { buildClassifierPrompt, parseClassificationResponse } from "../../../../packages/scanner-contract/classifier";
 
-if (!process.env.GEMINI_API_KEY) {
-  throw new Error("GEMINI_API_KEY is not set — cannot start without AI provider");
+const API_KEY = aiEnv("API_KEY");
+if (!API_KEY) {
+  throw new Error("AI_API_KEY is not set — cannot start without AI provider");
 }
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenerativeAI(API_KEY);
 
 // Model selection — set via environment variables. See .env.example for recommended values.
-// GEMINI_SCAN_MODEL    : PR diff scans (fast, cost-effective)
-// GEMINI_SWEEP_MODEL   : security sweeps (higher quality adversarial analysis)
-// GEMINI_DISCOVERY_MODEL: repo security context discovery
-if (!process.env.GEMINI_SCAN_MODEL || !process.env.GEMINI_SWEEP_MODEL || !process.env.GEMINI_DISCOVERY_MODEL) {
-  throw new Error("GEMINI_SCAN_MODEL, GEMINI_SWEEP_MODEL, and GEMINI_DISCOVERY_MODEL must be set");
+// AI_SCAN_MODEL     : PR diff scans (fast, cost-effective)
+// AI_SWEEP_MODEL    : security sweeps (higher quality adversarial analysis)
+// AI_DISCOVERY_MODEL: repo security context discovery
+if (!aiEnv("SCAN_MODEL") || !aiEnv("SWEEP_MODEL") || !aiEnv("DISCOVERY_MODEL")) {
+  throw new Error("AI_SCAN_MODEL, AI_SWEEP_MODEL, and AI_DISCOVERY_MODEL must be set");
 }
-const SCAN_MODEL = process.env.GEMINI_SCAN_MODEL;
-const SWEEP_MODEL = process.env.GEMINI_SWEEP_MODEL;
-const DISCOVERY_MODEL = process.env.GEMINI_DISCOVERY_MODEL;
+const SCAN_MODEL = requireAiEnv("SCAN_MODEL");
+const SWEEP_MODEL = requireAiEnv("SWEEP_MODEL");
+const DISCOVERY_MODEL = requireAiEnv("DISCOVERY_MODEL");
 // Verification (judge) pass — defaults to the scan model; disable with
 // VERIFY_FINDINGS=off (e.g. while measuring its effect with the eval harness).
-const VERIFIER_MODEL = process.env.GEMINI_VERIFIER_MODEL || SCAN_MODEL;
+const VERIFIER_MODEL = aiEnv("VERIFIER_MODEL") || SCAN_MODEL;
 const VERIFY_ENABLED = process.env.VERIFY_FINDINGS !== "off";
 
 const CORE_CATEGORIES: [string, string][] = [
@@ -141,7 +147,7 @@ const ALL_CATEGORIES = [...CORE_CATEGORIES, ...ADVERSARIAL_CATEGORIES];
 const SEVERITY_VALUES = ["critical", "high", "medium", "low"];
 const CONFIDENCE_VALUES = ["high", "medium", "low"];
 
-// Structured-output schema for scan responses. Gemini's responseSchema
+// Structured-output schema for scan responses. The provider's responseSchema
 // guarantees syntactically valid JSON matching this shape, which removes the
 // regex-extraction/parse-failure path entirely and constrains enums so the
 // model cannot invent severities or categories.
@@ -221,9 +227,10 @@ export class AIResponseParseError extends Error {
   }
 }
 
+
 /**
  * Stage 1 — classify a repository's project type so the scanner can apply
- * context-aware rules. Runs as a lightweight Gemini call using the same
+ * context-aware rules. Runs as a lightweight AI call using the same
  * discovery model. Silently returns "unknown" on any failure.
  *
  * @param filePaths   File paths from the diff or repo tree
@@ -259,12 +266,9 @@ export async function classifyProject(
       generationConfig: { responseMimeType: "application/json" },
     });
     const prompt = buildClassifierPrompt(repoFullName, filePaths, manifestContent);
-    const result = await Promise.race([
-      model.generateContent(prompt),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("classifier timed out")), 15_000),
-      ),
-    ]);
+    const result = await withAIDeadline("classifier", 15_000, (opts) =>
+      model.generateContent(prompt, opts),
+    );
     const usage = result.response.usageMetadata;
     return {
       classification: parseClassificationResponse(result.response.text()),
@@ -310,11 +314,9 @@ export async function analyzeCode(
   const prompt = buildPrompt(input, context, mode, classification);
 
   const AI_TIMEOUT_MS = 120_000;
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error(`[ai] Gemini call timed out after ${AI_TIMEOUT_MS / 1000}s`)), AI_TIMEOUT_MS),
+  const result = await withAIDeadline("AI call", AI_TIMEOUT_MS, (opts) =>
+    model.generateContent(prompt, opts),
   );
-
-  const result = await Promise.race([model.generateContent(prompt), timeoutPromise]);
   const text = result.response.text();
   const usage   = result.response.usageMetadata;
   const tokensIn  = usage?.promptTokenCount     ?? 0;
@@ -512,19 +514,11 @@ Return ONLY valid JSON (no markdown):
 
   try {
     const [authResult, customResult] = await Promise.all([
-      Promise.race([
-        model.generateContent(authPrompt),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error("discovery timed out")), 15_000),
-        ),
-      ]),
+      withAIDeadline("discovery", 15_000, (opts) => model.generateContent(authPrompt, opts)),
       customContextPrompt
-        ? Promise.race([
-            model.generateContent(customContextPrompt),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("custom context timed out")), 15_000),
-            ),
-          ])
+        ? withAIDeadline("custom context", 15_000, (opts) =>
+            model.generateContent(customContextPrompt, opts),
+          )
         : Promise.resolve(null),
     ]);
 
@@ -613,7 +607,7 @@ function categoryList(categories: [string, string][]): string {
 
 // Static instructions (identity, taint framework, category list, response schema, rules)
 // come before per-call content (repo context, classification, diff) so the static block
-// forms a stable prefix — Gemini 2.5's implicit caching matches on exact prefix reuse
+// forms a stable prefix — implicit prompt caching matches on exact prefix reuse
 // across calls, so keeping it first and byte-identical earns the reduced cached-token
 // rate on every scan after the first. Do not interpolate anything above the CONTEXT: line.
 export function buildPrompt(input: string, context: ScanContext, mode: string, classification?: ProjectClassification): string {

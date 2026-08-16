@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
 import type { Finding } from "../../../../packages/scanner-contract/types";
+import { withAIDeadline } from "./aiDeadline";
 
 /**
  * Verification (judge) pass — the false-positive firewall.
@@ -55,7 +56,7 @@ function lowerConfidence(c: Finding["confidence"]): Finding["confidence"] {
 }
 
 // The instructional block above <untrusted_input> is now fully static (no interpolation)
-// so it forms a stable prefix across repos/calls for Gemini's implicit caching — the repo
+// so it forms a stable prefix across repos/calls for the provider's implicit caching — the repo
 // name moved inside <untrusted_input> instead of the opening sentence.
 export function buildJudgePrompt(issues: Finding[], scannerInput: string, repo: string): string {
   const findingBlocks = issues
@@ -135,12 +136,9 @@ export async function verifyFindings(
       },
     });
 
-    const result = await Promise.race([
-      model.generateContent(buildJudgePrompt(issues, scannerInput, repo)),
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("verifier timed out")), VERIFY_TIMEOUT_MS),
-      ),
-    ]);
+    const result = await withAIDeadline("verifier", VERIFY_TIMEOUT_MS, (opts) =>
+      model.generateContent(buildJudgePrompt(issues, scannerInput, repo), opts),
+    );
 
     const usage = result.response.usageMetadata;
     const tokensIn = usage?.promptTokenCount ?? 0;

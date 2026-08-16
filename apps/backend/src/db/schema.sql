@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS scans (
   failure_reason  TEXT,                    -- why a scan didn't complete (see migration 005)
   credit_refunded BOOLEAN DEFAULT FALSE,   -- true when a claimed quota slot was refunded
   error_detail    TEXT,                    -- raw exception message for admin diagnosis (migration 006)
+  started_at      TIMESTAMPTZ,             -- when the worker picked the job up (migration 007)
+  reaped_at       TIMESTAMPTZ,             -- set by the reaper; tombstone, blocks later writes (migration 007)
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
@@ -67,6 +69,18 @@ ALTER TABLE scans ADD COLUMN IF NOT EXISTS credit_refunded BOOLEAN DEFAULT FALSE
 -- Migration 006: raw error message behind failure_reason, for admin diagnosis
 -- without needing to check server logs. Admin-only surface, capped ~2000 chars.
 ALTER TABLE scans ADD COLUMN IF NOT EXISTS error_detail TEXT;
+
+-- Migration 007: reaper accuracy. started_at is stamped at worker pickup (and
+-- re-stamped on each Bull retry) so the reaper can judge a never-consumed job by
+-- queue age and a died-mid-run job by run age, instead of treating a healthy
+-- backlog as stranded. reaped_at is a tombstone: once set, updateScanStatus
+-- refuses to write, so a late worker can't resurrect a refunded scan.
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ;
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS reaped_at  TIMESTAMPTZ;
+
+CREATE INDEX IF NOT EXISTS idx_scans_pending_reaper
+  ON scans (created_at)
+  WHERE status = 'pending';
 
 CREATE TABLE IF NOT EXISTS findings (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -143,8 +157,12 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS evidence              TEXT;
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS confidence            TEXT;
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS attacker_profile      TEXT;
 
--- Phase 5: stale findings — auto-labelled when a newer scan of the same
--- trigger no longer reproduces the issue (e.g. PR updated after a fix).
+-- Phase 5: stale findings — auto-labelled when a newer scan of the same trigger
+-- re-read the file the finding lives in and no longer reproduced it (e.g. PR
+-- updated after a fix). A scan that never looked at the file leaves the finding
+-- alone: a `synchronize` scan only sees the incremental diff, so treating its
+-- silence as a fix retired real findings nobody had addressed. See
+-- markStaleFindings() in apps/backend/src/db/queries.ts.
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS is_stale BOOLEAN DEFAULT FALSE;
 
 -- Phase 6: per-repo security context — auto-discovered on first scan and

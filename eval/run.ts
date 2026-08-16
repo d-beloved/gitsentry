@@ -6,7 +6,7 @@
  *   yarn eval                 # full pipeline (scan + verifier + secrets detector)
  *   VERIFY_FINDINGS=off yarn eval   # A/B the verifier's effect
  *
- * Requires the same env as the backend (GEMINI_API_KEY + model vars); no
+ * Requires the same env as the backend (AI_API_KEY + model vars); no
  * database or GitHub access is needed. Fixtures live in eval/fixtures as
  * <case>.diff + <case>.expected.json pairs:
  *   { "name": "...", "expect": [ { "file": "...", "categories": ["sql_injection", ...] } ] }
