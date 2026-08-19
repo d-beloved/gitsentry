@@ -87,6 +87,14 @@ export interface AIAnalysisResult {
   coverage?: ScanCoverage;
   tokens_in?: number;
   tokens_out?: number;
+  /**
+   * Prompt tokens served from the provider's cache. A subset of tokens_in, not
+   * an addition to it. Populated when the provider reports it; 0 otherwise.
+   * Cache hits bill at a fraction of the miss rate — an order of magnitude or
+   * more on some hosts — so cost figures that ignore this overstate spend on
+   * prefix-heavy prompts.
+   */
+  cached_tokens?: number;
   model_name?: string;
   threat_model?: {
     attacker_profiles?: string[];

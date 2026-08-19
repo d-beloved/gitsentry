@@ -785,11 +785,19 @@ export interface StrandedScanRow {
   started_at: string | null;
   quota_claimed: boolean | null;
   credit_refunded: boolean | null;
-  repos: {full_name: string} | null;
+  /** 'pull_request' | 'push_main' | 'push_branch'. */
+  trigger_type: string;
+  /** The PR number, as a string, when trigger_type is 'pull_request'. */
+  trigger_ref: string;
+  commit_sha: string;
+  repos: {full_name: string; installation_id: number | null} | null;
 }
 
+// commit_sha/trigger_*/installation_id are here for the check run the reaper
+// closes out — see closeOutCheckRun in reaper.ts.
 const STRANDED_COLUMNS =
-  "id, repo_id, created_at, started_at, quota_claimed, credit_refunded, repos(full_name)";
+  "id, repo_id, created_at, started_at, quota_claimed, credit_refunded, " +
+  "trigger_type, trigger_ref, commit_sha, repos(full_name, installation_id)";
 
 /**
  * Scans that are stuck rather than merely waiting. The two cases need different
@@ -993,4 +1001,158 @@ export async function refundScanSlot(
     p_month: effectiveMonth,
   });
   if (error) console.error("[db] refundScanSlot rpc error:", error.message);
+}
+
+// ─── Eval runs ────────────────────────────────────────────────────────────────
+
+export async function createEvalRun(params: {
+  label: string | null;
+  provider: string;
+  model: string;
+  verifierEnabled: boolean;
+  structuredMode: string | null;
+  fixturesTotal: number;
+}): Promise<string> {
+  const {data, error} = await supabase
+    .from("eval_runs")
+    .insert({
+      status: "running",
+      label: params.label,
+      provider: params.provider,
+      model: params.model,
+      verifier_enabled: params.verifierEnabled,
+      structured_mode: params.structuredMode,
+      fixtures_total: params.fixturesTotal,
+    })
+    .select("id")
+    .single();
+
+  if (error || !data) {
+    throw new Error(`Failed to create eval run: ${error?.message ?? "no row"}`);
+  }
+  return data.id as string;
+}
+
+/**
+ * Writes one fixture's result as it finishes.
+ *
+ * Upsert rather than insert so a resumed or re-run sweep overwrites its earlier
+ * attempt instead of double-counting the fixture. A failure here is logged, not
+ * thrown — losing one case's detail should not abort a three-minute sweep.
+ */
+export async function saveEvalCase(
+  runId: string,
+  c: {
+    fixtureId: string;
+    fixtureName: string;
+    isClean: boolean;
+    expected: number;
+    detected: number;
+    extras: number;
+    durationMs: number;
+    error: string | null;
+    findings: {category: string; file: string; severity: string}[];
+    misses: string[];
+    tokensIn: number;
+    tokensOut: number;
+    cachedTokens: number;
+  },
+  fixturesDone: number,
+): Promise<void> {
+  const {error} = await supabase.from("eval_run_cases").upsert(
+    {
+      run_id: runId,
+      fixture_id: c.fixtureId,
+      fixture_name: c.fixtureName,
+      is_clean: c.isClean,
+      expected: c.expected,
+      detected: c.detected,
+      extras: c.extras,
+      duration_ms: c.durationMs,
+      error: c.error,
+      findings: c.findings,
+      misses: c.misses,
+      tokens_in: c.tokensIn,
+      tokens_out: c.tokensOut,
+      cached_tokens: c.cachedTokens,
+    },
+    {onConflict: "run_id,fixture_id"},
+  );
+
+  if (error) console.error("[eval] saveEvalCase failed:", error.message);
+
+  // Drives the progress readout on /admin/eval while the sweep is still going.
+  const {error: progressError} = await supabase
+    .from("eval_runs")
+    .update({fixtures_done: fixturesDone})
+    .eq("id", runId);
+
+  if (progressError) {
+    console.error("[eval] progress update failed:", progressError.message);
+  }
+}
+
+export async function completeEvalRun(
+  runId: string,
+  totals: {
+    expectedTotal: number;
+    detected: number;
+    cleanFPs: number;
+    extras: number;
+    tokensIn: number;
+    tokensOut: number;
+    cachedTokens: number;
+    durationMs: number;
+  },
+): Promise<void> {
+  const {error} = await supabase
+    .from("eval_runs")
+    .update({
+      status: "completed",
+      expected_total: totals.expectedTotal,
+      detected: totals.detected,
+      clean_fps: totals.cleanFPs,
+      extras: totals.extras,
+      tokens_in: totals.tokensIn,
+      tokens_out: totals.tokensOut,
+      cached_tokens: totals.cachedTokens,
+      duration_ms: totals.durationMs,
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", runId);
+
+  if (error) console.error("[eval] completeEvalRun failed:", error.message);
+}
+
+/** Marks a run failed. Only reached when the sweep itself dies — per-fixture
+ *  errors are recorded on the case and the run still completes. */
+export async function failEvalRun(runId: string, message: string): Promise<void> {
+  const {error} = await supabase
+    .from("eval_runs")
+    .update({
+      status: "failed",
+      error: message.slice(0, 2000),
+      completed_at: new Date().toISOString(),
+    })
+    .eq("id", runId);
+
+  if (error) console.error("[eval] failEvalRun failed:", error.message);
+}
+
+/** True when a sweep is already in flight — evals are slow and serial, and two
+ *  at once would contend for the same rate limit and skew both. */
+export async function evalRunInFlight(): Promise<boolean> {
+  const {data, error} = await supabase
+    .from("eval_runs")
+    .select("id")
+    .eq("status", "running")
+    // A run that outlived a deploy is stranded, not in flight.
+    .gt("created_at", new Date(Date.now() - 30 * 60 * 1000).toISOString())
+    .limit(1);
+
+  if (error) {
+    console.error("[eval] evalRunInFlight check failed:", error.message);
+    return false;
+  }
+  return (data ?? []).length > 0;
 }

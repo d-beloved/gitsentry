@@ -6,6 +6,9 @@ import {
   refundScanSlot,
 } from "../db/queries";
 import { notifyScanFailure } from "./notifier";
+import { postIncompleteCheckRun } from "./github";
+import type { StrandedScanRow } from "../db/queries";
+import type { OrgWithUsage } from "../db/types";
 
 /**
  * Stranded-scan reaper.
@@ -23,6 +26,10 @@ import { notifyScanFailure } from "./notifier";
  * could post a duplicate PR review. Instead it closes the row out truthfully —
  * 'failed' with a refund — which is the same contract the worker's own catch
  * block honours, and leaves the customer free to trigger a rescan.
+ *
+ * Closing out means GitHub too, not just the database. A Pro repo has our check
+ * as a required status check, so a PR scan that dies leaves the PR waiting on a
+ * status that will never be reported. See closeOutCheckRun.
  *
  * Two clocks, not one (migration 007). Judging every row by `created_at` could
  * not tell a dropped job from one legitimately queued behind a backlog, and with
@@ -103,11 +110,13 @@ export async function reapStrandedScans(): Promise<number> {
 
       reaped++;
 
+      // One org read per scan, shared by the refund and the check run below.
+      const org = await getOrgByRepoId(scan.repo_id).catch(() => null);
+
       // Refund only if this scan actually consumed a slot and hasn't already
       // been refunded. Mirrors the worker's catch block.
       let creditRefunded = false;
       if (scan.quota_claimed && !scan.credit_refunded) {
-        const org = await getOrgByRepoId(scan.repo_id).catch(() => null);
         if (org) {
           await refundScanSlot(
             org.id, org.plan ?? "free", org.scan_month ?? null,
@@ -117,6 +126,8 @@ export async function reapStrandedScans(): Promise<number> {
           creditRefunded = true;
         }
       }
+
+      closeOutCheckRun(scan, org, creditRefunded);
 
       console.warn(
         `[reaper] Reaped scan ${scan.id} (${repoFullName}, ${ageMinutes}m old)` +
@@ -135,6 +146,54 @@ export async function reapStrandedScans(): Promise<number> {
   }
 
   return reaped;
+}
+
+/**
+ * Tell GitHub the scan is over, for the one case where a check run is pending on
+ * it: a PR scan on a Pro repo. Those repos have "Gitsentry Security Scan" as a
+ * required check, and the worker only ever posts that check run on the success
+ * path — so a reaped scan leaves the PR blocked on a status that will now never
+ * arrive. Closing the row out in the database without closing out the check run
+ * fixes the dashboard and leaves the customer's PR stuck.
+ *
+ * Gated exactly like the worker's own postCheckRun call (PR + head sha + Pro),
+ * because posting anywhere else would create a check run that never otherwise
+ * existed — and on a repo with branch protection, inventing a red required check
+ * is its own outage.
+ *
+ * Fire-and-forget: GitHub being unreachable must not cost us the reap, which is
+ * already committed in the database by this point.
+ */
+function closeOutCheckRun(
+  scan: StrandedScanRow,
+  org: OrgWithUsage | null,
+  creditRefunded: boolean,
+): void {
+  const isPro =
+    org?.plan === "pro" &&
+    (org.subscription_status === "active" || org.subscription_status == null);
+  const installationId = scan.repos?.installation_id;
+  const repoFullName = scan.repos?.full_name;
+
+  if (
+    !isPro ||
+    !installationId ||
+    !repoFullName ||
+    scan.trigger_type !== "pull_request" ||
+    !scan.commit_sha
+  ) {
+    return;
+  }
+
+  postIncompleteCheckRun(repoFullName, scan.commit_sha, installationId, creditRefunded)
+    .then(() =>
+      console.warn(
+        `[reaper] Closed out check run for ${repoFullName}#${scan.trigger_ref} @ ${scan.commit_sha.slice(0, 7)}`,
+      ),
+    )
+    .catch((err: Error) =>
+      console.error(`[reaper] postIncompleteCheckRun failed for scan ${scan.id}:`, err.message),
+    );
 }
 
 /**

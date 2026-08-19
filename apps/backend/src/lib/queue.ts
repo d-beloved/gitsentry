@@ -4,6 +4,30 @@ import { processScanJob } from "./workers/scanWorker";
 
 let scanQueue: Bull.Queue<ScanJobData> | null = null;
 
+/**
+ * How many scans the worker runs at once. One by default, deliberately: the
+ * scan's cost is a single long AI call, and running several of those in
+ * parallel against one provider account is what produced the timeouts this
+ * queue was tuned around. The knob exists so that can be measured on a real
+ * deployment — raise SCAN_WORKER_CONCURRENCY, watch the AI timeout rate and
+ * p95 scan duration, and roll it back with a config change rather than a
+ * release. Raising it also shortens queue waits, which is what
+ * SCAN_QUEUE_TIMEOUT_MINUTES in the reaper is sized against.
+ */
+function workerConcurrency(): number {
+  const raw = process.env.SCAN_WORKER_CONCURRENCY;
+  if (!raw) return 1;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    console.warn(`[queue] SCAN_WORKER_CONCURRENCY="${raw}" is not a positive integer — using 1`);
+    return 1;
+  }
+  if (parsed > 1) {
+    console.log(`[queue] Worker concurrency set to ${parsed}`);
+  }
+  return parsed;
+}
+
 if (process.env.REDIS_URL) {
   try {
     const isTLS = process.env.REDIS_URL.startsWith("rediss://");
@@ -36,7 +60,7 @@ if (process.env.REDIS_URL) {
     // Wire the worker after the module is fully loaded to avoid circular requires
     setImmediate(() => {
       import("./workers/scanWorker").then(({ default: processor }) => {
-        scanQueue!.process(processor);
+        scanQueue!.process(workerConcurrency(), processor);
       }).catch((err) => console.error("[queue] Failed to load worker:", err));
     });
 

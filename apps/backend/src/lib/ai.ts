@@ -1,9 +1,9 @@
-import { GoogleGenerativeAI, SchemaType, type ResponseSchema } from "@google/generative-ai";
 import { extractScannerInput, extractScannablePaths } from "./differ";
 import { detectSecretsInDiff, mergeSecretFindings } from "./secretsDetector";
 import { verifyFindings } from "./verifier";
 import { withAIDeadline } from "./aiDeadline";
 import { aiEnv, requireAiEnv } from "./aiEnv";
+import { getProvider, type JsonSchema } from "../../../../packages/ai-provider";
 
 // Re-exported so callers have one place to import AI error types from.
 export { AITimeoutError } from "./aiDeadline";
@@ -16,7 +16,10 @@ const API_KEY = aiEnv("API_KEY");
 if (!API_KEY) {
   throw new Error("AI_API_KEY is not set — cannot start without AI provider");
 }
-const genAI = new GoogleGenerativeAI(API_KEY);
+// Which vendor this resolves to is an env decision (AI_BASE_URL); see
+// packages/ai-provider/index.ts. Resolved once at module load so a
+// misconfigured provider fails at boot rather than on the first scan.
+const provider = getProvider();
 
 // Model selection — set via environment variables. See .env.example for recommended values.
 // AI_SCAN_MODEL     : PR diff scans (fast, cost-effective)
@@ -151,31 +154,31 @@ const CONFIDENCE_VALUES = ["high", "medium", "low"];
 // guarantees syntactically valid JSON matching this shape, which removes the
 // regex-extraction/parse-failure path entirely and constrains enums so the
 // model cannot invent severities or categories.
-const ANALYSIS_RESPONSE_SCHEMA: ResponseSchema = {
-  type: SchemaType.OBJECT,
+const ANALYSIS_RESPONSE_SCHEMA: JsonSchema = {
+  type: "object",
   properties: {
     issues: {
-      type: SchemaType.ARRAY,
+      type: "array",
       items: {
-        type: SchemaType.OBJECT,
+        type: "object",
         properties: {
-          severity: { type: SchemaType.STRING, format: "enum", enum: SEVERITY_VALUES },
+          severity: { type: "string", format: "enum", enum: SEVERITY_VALUES },
           category: {
-            type: SchemaType.STRING,
+            type: "string",
             format: "enum",
             enum: ALL_CATEGORIES.map(([key]) => key),
           },
-          file_path: { type: SchemaType.STRING },
-          line_number: { type: SchemaType.INTEGER, nullable: true },
-          code_snippet: { type: SchemaType.STRING },
-          description: { type: SchemaType.STRING },
-          fix_suggestion: { type: SchemaType.STRING },
-          affected_component: { type: SchemaType.STRING },
-          exploitation_scenario: { type: SchemaType.STRING },
-          impact: { type: SchemaType.STRING },
-          evidence: { type: SchemaType.STRING },
-          confidence: { type: SchemaType.STRING, format: "enum", enum: CONFIDENCE_VALUES },
-          attacker_profile: { type: SchemaType.STRING },
+          file_path: { type: "string" },
+          line_number: { type: "integer", nullable: true },
+          code_snippet: { type: "string" },
+          description: { type: "string" },
+          fix_suggestion: { type: "string" },
+          affected_component: { type: "string" },
+          exploitation_scenario: { type: "string" },
+          impact: { type: "string" },
+          evidence: { type: "string" },
+          confidence: { type: "string", format: "enum", enum: CONFIDENCE_VALUES },
+          attacker_profile: { type: "string" },
         },
         required: [
           "severity",
@@ -188,31 +191,31 @@ const ANALYSIS_RESPONSE_SCHEMA: ResponseSchema = {
         ],
       },
     },
-    summary: { type: SchemaType.STRING },
+    summary: { type: "string" },
     threat_model: {
-      type: SchemaType.OBJECT,
+      type: "object",
       properties: {
-        attacker_profiles: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-        entry_points: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-        trust_boundaries: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-        sensitive_assets: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+        attacker_profiles: { type: "array", items: { type: "string" } },
+        entry_points: { type: "array", items: { type: "string" } },
+        trust_boundaries: { type: "array", items: { type: "string" } },
+        sensitive_assets: { type: "array", items: { type: "string" } },
       },
     },
     attack_chains: {
-      type: SchemaType.ARRAY,
+      type: "array",
       items: {
-        type: SchemaType.OBJECT,
+        type: "object",
         properties: {
-          title: { type: SchemaType.STRING },
-          severity: { type: SchemaType.STRING, format: "enum", enum: SEVERITY_VALUES },
-          steps: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
-          impact: { type: SchemaType.STRING },
-          recommended_fix: { type: SchemaType.STRING },
+          title: { type: "string" },
+          severity: { type: "string", format: "enum", enum: SEVERITY_VALUES },
+          steps: { type: "array", items: { type: "string" } },
+          impact: { type: "string" },
+          recommended_fix: { type: "string" },
         },
         required: ["title", "severity", "steps", "impact"],
       },
     },
-    recommendations: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+    recommendations: { type: "array", items: { type: "string" } },
   },
   required: ["issues", "summary"],
 };
@@ -261,19 +264,19 @@ export async function classifyProject(
   }
 
   try {
-    const model = genAI.getGenerativeModel({
-      model: DISCOVERY_MODEL,
-      generationConfig: { responseMimeType: "application/json" },
-    });
     const prompt = buildClassifierPrompt(repoFullName, filePaths, manifestContent);
     const result = await withAIDeadline("classifier", 15_000, (opts) =>
-      model.generateContent(prompt, opts),
+      provider.generate({
+        model: DISCOVERY_MODEL,
+        prompt,
+        signal: opts.signal,
+        timeoutMs: opts.timeout,
+      }),
     );
-    const usage = result.response.usageMetadata;
     return {
-      classification: parseClassificationResponse(result.response.text()),
-      tokensIn: usage?.promptTokenCount ?? 0,
-      tokensOut: usage?.candidatesTokenCount ?? 0,
+      classification: parseClassificationResponse(result.text),
+      tokensIn: result.tokensIn,
+      tokensOut: result.tokensOut,
       model: DISCOVERY_MODEL,
     };
   } catch (err) {
@@ -290,13 +293,6 @@ export async function analyzeCode(
   const mode = options.mode === "security_sweep" ? "security_sweep" : "diff_scan";
   const classification = options.classification;
   const modelName = mode === "security_sweep" ? SWEEP_MODEL : SCAN_MODEL;
-  const model = genAI.getGenerativeModel({
-    model: modelName,
-    generationConfig: {
-      responseMimeType: "application/json",
-      responseSchema: ANALYSIS_RESPONSE_SCHEMA,
-    },
-  });
   let input: string;
   let coverage: ScanCoverage | undefined;
   if (mode === "diff_scan") {
@@ -315,12 +311,19 @@ export async function analyzeCode(
 
   const AI_TIMEOUT_MS = 120_000;
   const result = await withAIDeadline("AI call", AI_TIMEOUT_MS, (opts) =>
-    model.generateContent(prompt, opts),
+    provider.generate({
+      model: modelName,
+      prompt,
+      schema: ANALYSIS_RESPONSE_SCHEMA,
+      schemaName: "analysis",
+      signal: opts.signal,
+      timeoutMs: opts.timeout,
+    }),
   );
-  const text = result.response.text();
-  const usage   = result.response.usageMetadata;
-  const tokensIn  = usage?.promptTokenCount     ?? 0;
-  const tokensOut = usage?.candidatesTokenCount ?? 0;
+  const text = result.text;
+  const tokensIn  = result.tokensIn;
+  const cachedTokens = result.cachedTokens;
+  const tokensOut = result.tokensOut;
 
   // responseSchema makes the output valid JSON in practice, but keep the
   // brace-extraction fallback for defence in depth. A response that still
@@ -369,7 +372,7 @@ export async function analyzeCode(
     let verifyTokensIn = 0;
     let verifyTokensOut = 0;
     if (mode === "diff_scan" && VERIFY_ENABLED && issues.length > 0) {
-      const vr = await verifyFindings(genAI, VERIFIER_MODEL, issues, input, context.repo);
+      const vr = await verifyFindings(provider, VERIFIER_MODEL, issues, input, context.repo);
       if (vr.dropped > 0) {
         console.log(`[ai] Verifier dropped ${vr.dropped}/${issues.length} finding(s) as false positives`);
       }
@@ -400,6 +403,7 @@ export async function analyzeCode(
       coverage,
       tokens_in: tokensIn + verifyTokensIn,
       tokens_out: tokensOut + verifyTokensOut,
+      cached_tokens: cachedTokens,
       model_name: modelName,
       threat_model: parsed.threat_model ?? {},
       attack_chains: Array.isArray(parsed.attack_chains) ? parsed.attack_chains : [],
@@ -440,11 +444,6 @@ export async function discoverSecurityContext(
 ): Promise<DiscoverSecurityContextResult> {
   const empty = { context: "", tokensIn: 0, tokensOut: 0, model: DISCOVERY_MODEL };
   if (!files.length && !manifestContent) return empty;
-
-  const model = genAI.getGenerativeModel({
-    model: DISCOVERY_MODEL,
-    generationConfig: {responseMimeType: "application/json"},
-  });
 
   const customFile = files.find((f) => f.path === ".gitsentry/context.md");
   const authFiles = files.filter((f) => f.path !== ".gitsentry/context.md");
@@ -514,22 +513,30 @@ Return ONLY valid JSON (no markdown):
 
   try {
     const [authResult, customResult] = await Promise.all([
-      withAIDeadline("discovery", 15_000, (opts) => model.generateContent(authPrompt, opts)),
+      withAIDeadline("discovery", 15_000, (opts) =>
+        provider.generate({
+          model: DISCOVERY_MODEL,
+          prompt: authPrompt,
+          signal: opts.signal,
+          timeoutMs: opts.timeout,
+        }),
+      ),
       customContextPrompt
         ? withAIDeadline("custom context", 15_000, (opts) =>
-            model.generateContent(customContextPrompt, opts),
+            provider.generate({
+              model: DISCOVERY_MODEL,
+              prompt: customContextPrompt,
+              signal: opts.signal,
+              timeoutMs: opts.timeout,
+            }),
           )
         : Promise.resolve(null),
     ]);
 
-    const authUsage = authResult.response.usageMetadata;
-    const customUsage = customResult?.response.usageMetadata;
-    const tokensIn =
-      (authUsage?.promptTokenCount ?? 0) + (customUsage?.promptTokenCount ?? 0);
-    const tokensOut =
-      (authUsage?.candidatesTokenCount ?? 0) + (customUsage?.candidatesTokenCount ?? 0);
+    const tokensIn = authResult.tokensIn + (customResult?.tokensIn ?? 0);
+    const tokensOut = authResult.tokensOut + (customResult?.tokensOut ?? 0);
 
-    const authText = authResult.response.text();
+    const authText = authResult.text;
     const authMatch = authText.match(/\{[\s\S]*\}/);
     if (!authMatch && !customResult) return { context: "", tokensIn, tokensOut, model: DISCOVERY_MODEL };
 
@@ -553,7 +560,7 @@ Return ONLY valid JSON (no markdown):
     }
 
     if (customResult) {
-      const customText = customResult.response.text();
+      const customText = customResult.text;
       const customMatch = customText.match(/\{[\s\S]*\}/);
       if (customMatch) {
         const customParsed = JSON.parse(customMatch[0]) as {

@@ -1,4 +1,4 @@
-import { getDiff, getIncrementalDiff, postBotPRSkipComment, postSyncSkipComment, postSubscriptionPausedComment } from "../lib/github";
+import { getDiff, getIncrementalDiff, postBotPRSkipComment, postSyncSkipComment, postSubscriptionPausedComment, postSkippedCheckRun, hasRequiredCheck, type SkippedScanReason } from "../lib/github";
 import { saveScan, updateScanStatus, getOrgByInstallationId, scanExistsForCommit, getLastPRScanResult, getPreviousPRCommentId, updateScanCommentId, getRepoIdByFullName } from "../db/queries";
 import { parseDiffStats, truncateDiff, hasScannableContent } from "../lib/differ";
 import { isDependencyBot, isReleaseAutomationPR } from "../lib/botDetection";
@@ -12,6 +12,41 @@ const STARTER_CLEAN_RESCAN_THRESHOLD = 25;
 // to "free" on lapse, so an org whose plan is "free" *and* whose status is one
 // of these was a paying customer whose access to private-repo scans just ended.
 const LAPSED_SUBSCRIPTION_STATUSES = new Set(["canceled", "past_due", "payment_failed"]);
+
+/**
+ * Resolve the required check for a PR this webhook is about to walk away from.
+ *
+ * Most of the early returns below never create a scan row at all, so nothing
+ * downstream will ever report on the commit — and on a repo where our check is
+ * required, that leaves the PR on "Expected — waiting for status to be
+ * reported" permanently. A dependency-bot PR is the sharpest case: we skip
+ * those on every plan, which made every Dependabot PR on a Pro repo unmergeable.
+ *
+ * hasRequiredCheck is the gate rather than a plain plan check, so we resolve a
+ * check that exists instead of inventing one on a repo that never had it.
+ */
+function releaseCheck(
+  repoFullName: string,
+  headSha: string,
+  installationId: number,
+  reason: SkippedScanReason,
+  /**
+   * The org, when this call site already loaded it. `undefined` means "not
+   * fetched" — see `needsOrg`, which skips the read on the common path — and is
+   * not the same as `null`, which means "no org record exists".
+   */
+  org: Awaited<ReturnType<typeof getOrgByInstallationId>> | undefined,
+): void {
+  void (async () => {
+    try {
+      const resolved = org === undefined ? await getOrgByInstallationId(installationId) : org;
+      if (!hasRequiredCheck(resolved)) return;
+      await postSkippedCheckRun(repoFullName, headSha, installationId, reason);
+    } catch (err) {
+      console.error(`[PR] postSkippedCheckRun(${reason}) failed:`, (err as Error).message);
+    }
+  })();
+}
 
 export async function handlePR(payload: Record<string, unknown>): Promise<void> {
   const action = payload.action as string;
@@ -33,11 +68,30 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
   const prLogin = prUser.login as string | undefined;
   const isBot = (prUser.type as string | undefined)?.toLowerCase() === "bot";
 
+  // Only fetch org when a plan check is actually needed.
+  const needsOrg = !!(repo.private) || action === "synchronize" || isBot;
+
+  const [org, alreadyScanned] = await Promise.all([
+    needsOrg ? getOrgByInstallationId(installationId) : Promise.resolve(null),
+    scanExistsForCommit(repo.full_name as string, prHead.sha as string),
+  ]);
+
+  if (alreadyScanned) {
+    console.log(`[PR] Skipping duplicate delivery for ${repo.full_name} commit ${prHead.sha}`);
+    return;
+  }
+
+  // These two run *after* the duplicate-delivery guard, not before it: they now
+  // post a check run, and a redelivered webhook would otherwise put a second
+  // identical check on the same commit. The guard costs one indexed lookup that
+  // the org fetch is already waiting on.
+
   // Dependency-update bots are skipped on all plans (no code to scan).
   if (isDependencyBot(prLogin)) {
     console.log(
       `[PR] Skipping dependency bot PR ${repo.full_name}#${pr.number} (author: ${prLogin})`,
     );
+    releaseCheck(repo.full_name as string, prHead.sha as string, installationId, "dependency_bot", needsOrg ? org : undefined);
     return;
   }
 
@@ -57,21 +111,10 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     console.log(
       `[PR] Skipping release automation PR ${repo.full_name}#${pr.number} (author: ${prLogin}, branch: ${prHead.ref})`,
     );
+    releaseCheck(repo.full_name as string, prHead.sha as string, installationId, "release_automation", needsOrg ? org : undefined);
     return;
   }
 
-  // Only fetch org when a plan check is actually needed.
-  const needsOrg = !!(repo.private) || action === "synchronize" || isBot;
-
-  const [org, alreadyScanned] = await Promise.all([
-    needsOrg ? getOrgByInstallationId(installationId) : Promise.resolve(null),
-    scanExistsForCommit(repo.full_name as string, prHead.sha as string),
-  ]);
-
-  if (alreadyScanned) {
-    console.log(`[PR] Skipping duplicate delivery for ${repo.full_name} commit ${prHead.sha}`);
-    return;
-  }
 
   if (repo.private && (!org || org.plan === "free")) {
     // A downgraded org (was paying, subscription lapsed) still expects its
@@ -130,11 +173,13 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
       }
     }
     console.log(`[PR] Skipping private repo ${repo.full_name} — free/${org?.subscription_status ?? "no-sub"} plan`);
+    releaseCheck(repo.full_name as string, prHead.sha as string, installationId, "subscription_inactive", org);
     return;
   }
 
   if (action === "synchronize" && (!org || org.plan === "free")) {
     console.log(`[PR] Skipping synchronize for ${repo.full_name} — ${org?.plan ?? "free"} plan`);
+    releaseCheck(repo.full_name as string, prHead.sha as string, installationId, "subscription_inactive", org);
     return;
   }
 
@@ -148,6 +193,7 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
       ).catch((err: Error) => console.error("[PR] postBotPRSkipComment failed:", err.message));
     }
     console.log(`[PR] Skipping bot PR ${repo.full_name}#${pr.number} — free plan`);
+    releaseCheck(repo.full_name as string, prHead.sha as string, installationId, "subscription_inactive", org);
     return;
   }
 
@@ -204,7 +250,10 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     diff = await getDiff(repo.full_name as string, pr.number as number, installationId);
   }
 
-  if (!diff || diff.length < 10) return;
+  if (!diff || diff.length < 10) {
+    releaseCheck(repo.full_name as string, prHead.sha as string, installationId, "no_scannable_changes", needsOrg ? org : undefined);
+    return;
+  }
 
   // Skip lockfile/generated-only diffs — there is nothing scannable left after
   // stripping them, and an empty scanner input invites hallucinated findings.
@@ -212,6 +261,7 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     console.log(
       `[PR] Skipping ${repo.full_name}#${pr.number} — no scannable code (dependency/generated-only diff)`,
     );
+    releaseCheck(repo.full_name as string, prHead.sha as string, installationId, "no_scannable_changes", needsOrg ? org : undefined);
     return;
   }
 

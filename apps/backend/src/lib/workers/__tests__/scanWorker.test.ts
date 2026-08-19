@@ -10,7 +10,13 @@ jest.mock("../../github", () => ({
   postCommitComment: jest.fn().mockResolvedValue(undefined),
   postCheckRun: jest.fn().mockResolvedValue(undefined),
   postUpgradeComment: jest.fn().mockResolvedValue(undefined),
+  postSkippedCheckRun: jest.fn().mockResolvedValue(undefined),
+  postIncompleteCheckRun: jest.fn().mockResolvedValue(undefined),
+  postSubscriptionPausedComment: jest.fn().mockResolvedValue(456),
   setupBranchProtection: jest.fn().mockResolvedValue(undefined),
+  // Real implementation: it is pure plan/subscription logic, and which orgs it
+  // admits is exactly what the check-run tests below are asserting.
+  hasRequiredCheck: jest.requireActual("../../github").hasRequiredCheck,
 }));
 jest.mock("../../securityContext", () => ({
   resolveSecurityContext: jest.fn().mockResolvedValue({ repoSecurityContext: "", classification: undefined }),
@@ -51,7 +57,13 @@ import {
   getPreviousPRCommentId,
   getOpenPRFindings,
 } from "../../../db/queries";
-import { postPRReview, postCheckRun } from "../../github";
+import {
+  postPRReview,
+  postCheckRun,
+  postSkippedCheckRun,
+  postIncompleteCheckRun,
+  postSubscriptionPausedComment,
+} from "../../github";
 import { notifyScanFailure } from "../../notifier";
 
 const baseJob: ScanJobData = {
@@ -348,5 +360,102 @@ describe("processScanJob — findings from earlier commits", () => {
 
     expect(postPRReview).toHaveBeenCalledTimes(1);
     expect((postPRReview as jest.Mock).mock.calls[0][3]).toEqual([]);
+  });
+});
+
+// A repo where our check is required blocks the merge until *something* reports
+// on the head sha. Every early return below used to report nothing, which left
+// the PR on "Expected — waiting for status to be reported" permanently. These
+// assert both halves of the policy: benign skips resolve the check so the PR can
+// merge, a scan that failed holds it.
+describe("processScanJob — required check resolution", () => {
+  const PRO = {
+    id: "org-1", plan: "pro", subscription_status: "active", scan_month: "2026-07",
+  };
+
+  // The paused comment is posted from a floating async IIFE so it never blocks
+  // the skip; let its microtasks drain before asserting.
+  const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
+
+  it("releases the check when a Pro org is out of scans", async () => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue(PRO);
+    (tryClaimScan as jest.Mock).mockResolvedValue(false);
+
+    await processScanJob(baseJob);
+
+    expect(postSkippedCheckRun).toHaveBeenCalledWith(
+      "acme/app", "abc1234", 42, "quota_exceeded", { plan: "pro", limit: 500 },
+    );
+  });
+
+  it("posts nothing for a free org out of scans — no required check exists to release", async () => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue({
+      id: "org-1", plan: "free", subscription_status: "active", scan_month: "2026-07",
+    });
+    (tryClaimScan as jest.Mock).mockResolvedValue(false);
+
+    await processScanJob(baseJob);
+
+    expect(postSkippedCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("releases the check and says so on the PR when the subscription has lapsed", async () => {
+    // Paddle sets plan:"free" on lapse, but the branch protection we set up
+    // while they were paying is still there — so the check still has to resolve.
+    (getOrgByRepoId as jest.Mock).mockResolvedValue({
+      id: "org-1", plan: "free", subscription_status: "canceled", scan_month: "2026-07",
+    });
+
+    await processScanJob(baseJob);
+    await flush();
+
+    expect(postSkippedCheckRun).toHaveBeenCalledWith(
+      "acme/app", "abc1234", 42, "subscription_inactive", undefined,
+    );
+    expect(postSubscriptionPausedComment).toHaveBeenCalledWith("acme/app", 7, 42, null);
+  });
+
+  it("releases the check when the installation has no org record", async () => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue(null);
+
+    await processScanJob(baseJob);
+
+    // Deliberately ungated: with no org we cannot tell whether the repo carries
+    // our check, and guessing wrong strands a PR nobody can merge.
+    expect(postSkippedCheckRun).toHaveBeenCalledWith("acme/app", "abc1234", 42, "no_org");
+  });
+
+  it("holds the check with a red result when the scan itself failed", async () => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue(PRO);
+    (tryClaimScan as jest.Mock).mockResolvedValue(true);
+    (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: false});
+    (analyzeCode as jest.Mock).mockRejectedValue(new Error("gemini exploded"));
+
+    await expect(processScanJob(baseJob)).rejects.toThrow("gemini exploded");
+
+    expect(postIncompleteCheckRun).toHaveBeenCalledWith("acme/app", "abc1234", 42, true);
+    expect(postSkippedCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("waits for the last attempt before posting a red check", async () => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue(PRO);
+    (tryClaimScan as jest.Mock).mockResolvedValue(true);
+    (analyzeCode as jest.Mock).mockRejectedValue(new Error("transient"));
+
+    await expect(
+      processScanJob(baseJob, { isFinalAttempt: () => false }),
+    ).rejects.toThrow("transient");
+
+    // Otherwise attempt 1's red check sits in the PR next to attempt 3's green.
+    expect(postIncompleteCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("posts no check run for a push scan, which never had one", async () => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue(PRO);
+    (tryClaimScan as jest.Mock).mockResolvedValue(false);
+
+    await processScanJob({ ...baseJob, prNumber: null, triggerType: "push_main" } as ScanJobData);
+
+    expect(postSkippedCheckRun).not.toHaveBeenCalled();
   });
 });

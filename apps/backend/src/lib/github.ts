@@ -347,6 +347,205 @@ export async function postCheckRun(
   });
 }
 
+// Subscription states that mean a paid plan has lapsed. Paddle sets plan:"free"
+// on lapse, so the status is the only thing that still says "this org used to
+// pay us" — and their repos may still carry the branch protection we set up
+// while they did. See hasRequiredCheck.
+const LAPSED_SUBSCRIPTION_STATUSES = new Set(["canceled", "past_due", "payment_failed"]);
+
+/**
+ * Whether "Gitsentry Security Scan" is a required status check on this org's
+ * repos — i.e. whether a PR we never report on gets stuck on "Expected —
+ * waiting for status to be reported" and blocks the merge forever.
+ *
+ * setupBranchProtection only ever runs for Pro, so Pro is the main case. Lapsed
+ * orgs are here as a safety net: the Paddle webhook does call
+ * removeBranchProtectionForOrg on downgrade, but that is best-effort — it walks
+ * the org's repos under Promise.allSettled, only covers rows with an
+ * installation_id, only touches default_branch, and logs failures rather than
+ * retrying them. Any repo it misses keeps a required check we have stopped
+ * feeding, which strands every later PR. Admitting lapsed orgs here costs a
+ * redundant neutral check where the removal worked, and unblocks the PRs where
+ * it did not.
+ *
+ * Everyone else has no protection, and posting a check run for them would create
+ * one where none existed. That is why this gate is here and not just an isPro
+ * check at each call site.
+ */
+export function hasRequiredCheck(
+  org: {plan?: string | null; subscription_status?: string | null} | null,
+): boolean {
+  if (!org) return false;
+  const status = org.subscription_status;
+  if (org.plan === "pro" && (status === "active" || status == null)) return true;
+  return !!status && LAPSED_SUBSCRIPTION_STATUSES.has(status);
+}
+
+/**
+ * Why a PR was not scanned. Every one of these is a state we decided on
+ * deliberately — the diff had nothing in it, the plan doesn't cover this scan —
+ * as opposed to a scan that ran and failed, which is postIncompleteCheckRun.
+ */
+export type SkippedScanReason =
+  | "no_scannable_changes"
+  | "dependency_bot"
+  | "release_automation"
+  | "quota_exceeded"
+  | "subscription_inactive"
+  | "no_org";
+
+const SKIP_COPY: Record<SkippedScanReason, {title: string; summary: string}> = {
+  no_scannable_changes: {
+    title: "No scannable changes",
+    summary:
+      "This PR changes no application code — the diff is empty, or contains only " +
+      "lockfiles and generated output. There was nothing for Gitsentry.dev to scan.",
+  },
+  dependency_bot: {
+    title: "Dependency update — not scanned",
+    summary:
+      "Gitsentry.dev does not scan dependency-update PRs: they change lockfiles and " +
+      "manifests rather than application code. Review the upstream changelog as usual.",
+  },
+  release_automation: {
+    title: "Release automation — not scanned",
+    summary:
+      "This PR was opened by release automation and only bumps versions and " +
+      "changelogs, so Gitsentry.dev did not scan it.",
+  },
+  quota_exceeded: {
+    title: "Monthly scan limit reached",
+    summary: "",
+  },
+  subscription_inactive: {
+    title: "Scanning paused — subscription inactive",
+    summary:
+      "Your subscription has ended, so this PR was **not scanned for security issues**. " +
+      `Reactivate it from your [Gitsentry dashboard](${PRODUCT_URL}/dashboard) to resume scanning.`,
+  },
+  no_org: {
+    title: "Not scanned — installation incomplete",
+    summary:
+      "Gitsentry.dev has no organisation record for this repository, so this PR was " +
+      "**not scanned for security issues**. Reinstall the app, or contact support, to " +
+      "finish setting it up.",
+  },
+};
+
+/**
+ * Report a PR we deliberately did not scan, so the required check resolves.
+ *
+ * The conclusion is "neutral", which satisfies a required status check and lets
+ * the PR merge. That is a deliberate choice, and it is not the same call as
+ * postIncompleteCheckRun: there, we tried to establish the PR's security state
+ * and could not, so the gate holds. Here we either know there was nothing to
+ * check, or we chose not to check for reasons of billing — and blocking a
+ * customer's merges over their invoice turns a billing conversation into an
+ * outage on their repo. It also gets the required check deleted, which loses us
+ * the gate permanently on the very account we wanted to convert.
+ *
+ * The check still carries the reason in its summary, and the billing cases post
+ * a PR comment alongside it — a grey check nobody expands is disclosure, not
+ * notification.
+ */
+export async function postSkippedCheckRun(
+  repoFullName: string,
+  headSha: string,
+  installationId: number,
+  reason: SkippedScanReason,
+  /** Only for "quota_exceeded", which names the plan and its limit. */
+  quota?: {plan: string; limit: number},
+): Promise<void> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  // Idempotency. Several of the call sites never write a scan row, so their own
+  // duplicate-delivery guards (which key off the scans table) cannot see a
+  // repeat — a redelivered webhook would stack a second identical grey check on
+  // the same commit. Reporting the same conclusion twice is harmless to the
+  // gate but looks like a malfunction in the PR. On a lookup failure we post
+  // anyway: a duplicate check is a cosmetic problem, an unreported one blocks
+  // the merge.
+  try {
+    const {data} = await octokit.request(
+      "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
+      {owner, repo, ref: headSha, check_name: CHECK_NAME},
+    );
+    if (data.check_runs.some((run) => run.status === "completed")) {
+      return;
+    }
+  } catch (err) {
+    console.warn(
+      `[github] check-run lookup failed for ${repoFullName}@${headSha.slice(0, 7)} — posting anyway:`,
+      (err as Error).message,
+    );
+  }
+
+  const copy = SKIP_COPY[reason];
+  const summary =
+    reason === "quota_exceeded"
+      ? `This PR was **not scanned for security issues**: the ${
+          PLAN_LABELS[quota?.plan ?? "free"] ?? "Free"
+        } plan includes ${quota?.limit ?? 10} scans per month and this month's are used up.\n\n` +
+        `Scanning resumes next month, or immediately on a higher plan — see your ` +
+        `[Gitsentry dashboard](${PRODUCT_URL}/dashboard).`
+      : copy.summary;
+
+  await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
+    owner,
+    repo,
+    name: CHECK_NAME,
+    head_sha: headSha,
+    status: "completed",
+    conclusion: "neutral",
+    output: {title: copy.title, summary},
+  });
+}
+
+/**
+ * Close out the check run for a scan that never produced a result.
+ *
+ * Pro repos have "Gitsentry Security Scan" as a required status check, and the
+ * only check run we ever post is the completed one at the end of a successful
+ * scan. So a scan that dies — the worker killed mid-run, the queued job dropped
+ * — leaves the PR sitting on "Expected — waiting for status to be reported"
+ * with no way for the author to clear it. The reaper closes the row out in the
+ * database; this closes it out on the PR.
+ *
+ * "timed_out" rather than "neutral" on purpose: a required security gate must
+ * not open itself because our own pipeline failed. It renders as a red check
+ * whose Re-run button is wired to handleCheckRun, so the author's fix is one
+ * click.
+ */
+export async function postIncompleteCheckRun(
+  repoFullName: string,
+  headSha: string,
+  installationId: number,
+  /** Whether the scan's credit was handed back, so the summary can say so. */
+  creditRefunded: boolean,
+): Promise<void> {
+  const octokit = await getOctokit(installationId);
+  const [owner, repo] = repoFullName.split("/");
+
+  await octokit.request("POST /repos/{owner}/{repo}/check-runs", {
+    owner,
+    repo,
+    name: CHECK_NAME,
+    head_sha: headSha,
+    status: "completed",
+    conclusion: "timed_out",
+    output: {
+      title: "Scan did not complete",
+      summary:
+        "Gitsentry.dev started scanning this commit but the scan never finished, " +
+        "so this PR has not been checked for security issues.\n\n" +
+        (creditRefunded ? "The scan credit has been refunded to your account.\n\n" : "") +
+        "Click **Re-run** on this check to scan the PR again, or start a rescan from your " +
+        `[Gitsentry dashboard](${PRODUCT_URL}/dashboard).`,
+    },
+  });
+}
+
 // ─── Branch protection ────────────────────────────────────────────────────────
 
 const CHECK_NAME = "Gitsentry Security Scan";

@@ -10,6 +10,9 @@ jest.mock("../../db/queries", () => ({
 jest.mock("../notifier", () => ({
   notifyScanFailure: jest.fn().mockResolvedValue(undefined),
 }));
+jest.mock("../github", () => ({
+  postIncompleteCheckRun: jest.fn().mockResolvedValue(undefined),
+}));
 
 import { reapStrandedScans } from "../reaper";
 import {
@@ -21,6 +24,7 @@ import {
   type StrandedScanRow,
 } from "../../db/queries";
 import { notifyScanFailure } from "../notifier";
+import { postIncompleteCheckRun } from "../github";
 
 const mockGetStranded = getStrandedScans as jest.MockedFunction<typeof getStrandedScans>;
 const mockClaim = claimStrandedScan as jest.MockedFunction<typeof claimStrandedScan>;
@@ -28,6 +32,7 @@ const mockMarkRefunded = markScanCreditRefunded as jest.MockedFunction<typeof ma
 const mockGetOrg = getOrgByRepoId as jest.MockedFunction<typeof getOrgByRepoId>;
 const mockRefund = refundScanSlot as jest.MockedFunction<typeof refundScanSlot>;
 const mockNotify = notifyScanFailure as jest.MockedFunction<typeof notifyScanFailure>;
+const mockCheckRun = postIncompleteCheckRun as jest.MockedFunction<typeof postIncompleteCheckRun>;
 
 function strandedScan(overrides: Partial<StrandedScanRow> = {}): StrandedScanRow {
   return {
@@ -37,7 +42,10 @@ function strandedScan(overrides: Partial<StrandedScanRow> = {}): StrandedScanRow
     started_at: null,
     quota_claimed: true,
     credit_refunded: false,
-    repos: { full_name: "acme/api" },
+    trigger_type: "pull_request",
+    trigger_ref: "42",
+    commit_sha: "abc1234def5678",
+    repos: { full_name: "acme/api", installation_id: 99 },
     ...overrides,
   };
 }
@@ -46,7 +54,12 @@ const ORG = {
   id: "org-1",
   plan: "pro",
   scan_month: "2026-08",
+  subscription_status: "active",
 } as unknown as Awaited<ReturnType<typeof getOrgByRepoId>>;
+
+function org(overrides: Record<string, unknown>): Awaited<ReturnType<typeof getOrgByRepoId>> {
+  return { ...ORG, ...overrides } as Awaited<ReturnType<typeof getOrgByRepoId>>;
+}
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -113,6 +126,68 @@ describe("reapStrandedScans", () => {
       strandedScan({ id: "scan-good", repo_id: "repo-2" }),
     ]);
     mockClaim.mockRejectedValueOnce(new Error("db down")).mockResolvedValue(true);
+
+    expect(await reapStrandedScans()).toBe(1);
+    expect(mockRefund).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes out the pending check run on a reaped Pro PR scan", async () => {
+    mockGetStranded.mockResolvedValue([strandedScan()]);
+
+    await reapStrandedScans();
+
+    expect(mockCheckRun).toHaveBeenCalledWith("acme/api", "abc1234def5678", 99, true);
+  });
+
+  it("tells the check run the credit was not refunded when it was not", async () => {
+    mockGetStranded.mockResolvedValue([strandedScan({ quota_claimed: false })]);
+
+    await reapStrandedScans();
+
+    expect(mockCheckRun).toHaveBeenCalledWith("acme/api", "abc1234def5678", 99, false);
+  });
+
+  // Everything below never had a check run posted in the first place, so posting
+  // one now would invent a red required check on a PR that had none.
+  it("posts no check run for a non-Pro org", async () => {
+    mockGetStranded.mockResolvedValue([strandedScan()]);
+    mockGetOrg.mockResolvedValue(org({ plan: "free" }));
+
+    await reapStrandedScans();
+
+    expect(mockCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("posts no check run for a Pro org whose subscription has lapsed", async () => {
+    mockGetStranded.mockResolvedValue([strandedScan()]);
+    mockGetOrg.mockResolvedValue(org({ subscription_status: "past_due" }));
+
+    await reapStrandedScans();
+
+    expect(mockCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("posts no check run for a push scan", async () => {
+    mockGetStranded.mockResolvedValue([strandedScan({ trigger_type: "push_main" })]);
+
+    await reapStrandedScans();
+
+    expect(mockCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("posts no check run when the repo has no installation id", async () => {
+    mockGetStranded.mockResolvedValue([
+      strandedScan({ repos: { full_name: "acme/api", installation_id: null } }),
+    ]);
+
+    await reapStrandedScans();
+
+    expect(mockCheckRun).not.toHaveBeenCalled();
+  });
+
+  it("still reaps and refunds when GitHub rejects the check run", async () => {
+    mockGetStranded.mockResolvedValue([strandedScan()]);
+    mockCheckRun.mockRejectedValueOnce(new Error("422 unprocessable"));
 
     expect(await reapStrandedScans()).toBe(1);
     expect(mockRefund).toHaveBeenCalledTimes(1);

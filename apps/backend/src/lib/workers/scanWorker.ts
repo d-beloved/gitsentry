@@ -5,7 +5,12 @@ import {
   postCommitComment,
   postCheckRun,
   postUpgradeComment,
+  postSkippedCheckRun,
+  postIncompleteCheckRun,
+  postSubscriptionPausedComment,
+  hasRequiredCheck,
   setupBranchProtection,
+  type SkippedScanReason,
 } from "../github";
 import { resolveSecurityContext } from "../securityContext";
 import { extractScannablePaths } from "../differ";
@@ -57,6 +62,32 @@ export interface ProcessScanOptions {
   isFinalAttempt?: (err: unknown) => boolean;
 }
 
+/**
+ * Resolve the required check for a PR we are about to walk away from.
+ *
+ * Every early return below leaves a Pro PR sitting on "Expected — waiting for
+ * status to be reported", because the only check run we post on the happy path
+ * is the completed one at the end. Silence does not fail open here; it blocks
+ * the merge exactly as hard as a red check would, just without telling anyone
+ * why. See postSkippedCheckRun for why these resolve as neutral rather than
+ * holding the gate.
+ *
+ * Fire-and-forget: a GitHub hiccup must not turn a benign skip into a failed job.
+ */
+function releaseCheck(
+  target: {prNumber?: number | null; commitSha?: string | null},
+  repoFullName: string,
+  installationId: number,
+  org: {plan?: string | null; subscription_status?: string | null} | null,
+  reason: SkippedScanReason,
+  quota?: {plan: string; limit: number},
+): void {
+  if (target.prNumber == null || !target.commitSha || !hasRequiredCheck(org)) return;
+  postSkippedCheckRun(repoFullName, target.commitSha, installationId, reason, quota).catch(
+    (err: Error) => console.error(`[worker] postSkippedCheckRun(${reason}) failed:`, err.message),
+  );
+}
+
 export async function processScanJob(
   data: ScanJobData,
   options: ProcessScanOptions = {},
@@ -102,6 +133,23 @@ export async function processScanJob(
     if (!quotaAlreadyClaimed && org?.subscription_status && LAPSED_SUBSCRIPTION_STATUSES.has(org.subscription_status)) {
       console.log(`[worker] Scan ${scanId} skipped: subscription ${org.subscription_status}`);
       await updateScanStatus(scanId, [], 0, "skipped", { failureReason: "subscription_inactive" });
+      releaseCheck({prNumber, commitSha}, repoFullName, installationId, org, "subscription_inactive");
+      // A grey check nobody expands is disclosure, not notification, and this is
+      // the state where the customer most needs to know: their PRs are merging
+      // unscanned. The comment is updated in place, so a busy PR gets one.
+      if (prNumber != null) {
+        (async () => {
+          try {
+            const existing = await getPreviousPRCommentId(repoId, prNumber);
+            const commentId = await postSubscriptionPausedComment(
+              repoFullName, prNumber, installationId, existing?.commentId ?? null,
+            );
+            await updateScanCommentId(scanId, commentId);
+          } catch (err) {
+            console.error("[worker] postSubscriptionPausedComment failed:", (err as Error).message);
+          }
+        })();
+      }
       return;
     }
 
@@ -115,6 +163,15 @@ export async function processScanJob(
         // unlimited free scans on public repos that never completed installation setup.
         console.log(`[worker] Scan ${scanId} skipped: no org record (installation incomplete)`);
         await updateScanStatus(scanId, [], 0, "skipped", { failureReason: "no_org" });
+        // Deliberately not behind hasRequiredCheck: with no org record we cannot
+        // tell whether this repo carries our required check, and the cost of
+        // guessing wrong is asymmetric — a stray grey check on a broken install
+        // against a PR nobody can ever merge.
+        if (prNumber != null && commitSha) {
+          postSkippedCheckRun(repoFullName, commitSha, installationId, "no_org").catch(
+            (err: Error) => console.error("[worker] postSkippedCheckRun(no_org) failed:", err.message),
+          );
+        }
         return;
       }
       // Idempotency: a Bull retry of a job that already claimed its slot (then
@@ -130,6 +187,10 @@ export async function processScanJob(
             `[worker] Scan ${scanId} skipped: ${org.plan ?? "free"} limit (${scanLimit}/month) reached`,
           );
           await updateScanStatus(scanId, [], 0, "skipped", { failureReason: "quota_exceeded" });
+          releaseCheck({prNumber, commitSha}, repoFullName, installationId, org, "quota_exceeded", {
+            plan: org.plan ?? "free",
+            limit: scanLimit,
+          });
           (async () => {
             try {
               const existingCommentId =
@@ -334,6 +395,18 @@ export async function processScanJob(
     if (creditRefunded) {
       notifyScanFailure(repoId, repoFullName, "pipeline_error", true, scanId).catch((e: Error) =>
         console.error("[worker] notifyScanFailure failed:", e.message),
+      );
+    }
+
+    // The gate holds here, unlike the skips above: we tried to establish this
+    // PR's security state and could not, which is exactly what a required check
+    // is for. It blocks no harder than the silence it replaces — an unreported
+    // required check already blocks — but it says so, and its Re-run button is
+    // wired to handleCheckRun. Only on the last attempt: a red check posted on
+    // attempt 1 would sit in the PR's check list next to attempt 3's success.
+    if (finalAttempt && prNumber != null && commitSha && hasRequiredCheck(org)) {
+      postIncompleteCheckRun(repoFullName, commitSha, installationId, creditRefunded).catch(
+        (e: Error) => console.error("[worker] postIncompleteCheckRun failed:", e.message),
       );
     }
 

@@ -7,7 +7,7 @@
  * instructions. These tests pin the fix so it can't silently regress.
  */
 import { buildPrompt } from "../ai";
-import { buildJudgePrompt } from "../verifier";
+import { buildJudgePrompt, JUDGE_SYSTEM } from "../verifier";
 import type { ScanContext, Finding } from "../../../../../packages/scanner-contract/types";
 
 const baseContext: ScanContext = {
@@ -89,8 +89,12 @@ describe("buildJudgePrompt — untrusted diff trust boundary", () => {
     expect(prompt.indexOf("+ L3: db.query(...)")).toBeLessThan(close);
   });
 
+  // Asserted against the whole payload rather than buildJudgePrompt alone: the
+  // guard moved into the system message when the prompt was split for caching,
+  // and what matters is that the model is told, not which half tells it.
   it("instructs the judge to never treat delimited content as a command", () => {
-    const prompt = buildJudgePrompt([finding], "diff content", "octocat/example");
-    expect(prompt).toMatch(/not a directive|never an instruction/i);
+    const payload =
+      JUDGE_SYSTEM + "\n" + buildJudgePrompt([finding], "diff content", "octocat/example");
+    expect(payload).toMatch(/not a directive|never an instruction/i);
   });
 });

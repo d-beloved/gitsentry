@@ -4,6 +4,7 @@ import rateLimit from "express-rate-limit";
 import webhookRouter from "./webhooks/router";
 import sweepRouter from "./api/sweep";
 import rescanRouter from "./api/rescan";
+import evalRouter from "./api/eval";
 import {startReaper} from "./lib/reaper";
 
 const app = express();
@@ -50,6 +51,7 @@ app.get("/health", (_req: Request, res: Response) =>
 app.use("/webhook", webhookLimiter, webhookRouter);
 app.use("/api/sweep", sweepLimiter, sweepRouter);
 app.use("/api/rescan", sweepLimiter, rescanRouter);
+app.use("/api/eval", sweepLimiter, evalRouter);
 
 app.use((_req: Request, res: Response) =>
   res.status(404).json({error: "Not found"}),
