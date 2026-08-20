@@ -61,6 +61,18 @@ export interface GenerateRequest {
   signal?: AbortSignal;
   /** Advisory per-request budget, handed to SDKs that accept one. */
   timeoutMs?: number;
+  /**
+   * Host knobs for this call, merged over the provider's own extra body.
+   *
+   * Per-call rather than per-provider because the calls are not alike: a
+   * classifier picking a project type off a file list gains nothing from a
+   * model that reasons first, while the judge deciding whether a taint path is
+   * real is mostly reasoning. One process-wide setting has to be wrong for one
+   * of them. Merged shallowly, so a role sets only the keys it cares about.
+   *
+   * Ignored by providers whose transport has no request body to merge into.
+   */
+  extraBody?: Record<string, unknown>;
 }
 
 export interface GenerateResponse {

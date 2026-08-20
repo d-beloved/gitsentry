@@ -14,6 +14,12 @@ import { describeSchema, toStrictSchema } from "./schema";
  * whether they are served from a different path, how a cache hit is reported —
  * so those are configuration, not inference. A host table baked into the code
  * would be stale the week after it was written.
+ *
+ * `extraBody` is the general form of that rule. Hosts keep inventing knobs that
+ * change what a call costs and how long it takes — reasoning toggles, effort
+ * levels, safety settings — and each is spelled differently. Rather than grow a
+ * vendor switch per knob, callers pass the fields through verbatim; see
+ * AI_EXTRA_BODY in ./index.ts.
  */
 
 /**
@@ -44,6 +50,8 @@ export interface OpenAICompatOptions {
   providerOrder?: string[];
   /** When true, routing may leave `providerOrder`. Routers only. */
   allowFallbacks?: boolean;
+  /** Host-specific request-body fields merged into every call. See AI_EXTRA_BODY. */
+  extraBody?: Record<string, unknown>;
   /** Short label for logs and token rows. Defaults to the base URL's host. */
   name?: string;
 }
@@ -64,6 +72,7 @@ export class OpenAICompatProvider implements AIProvider {
       structuredMode: options.structuredMode ?? "json_object",
       providerOrder: options.providerOrder ?? [],
       allowFallbacks: options.allowFallbacks ?? true,
+      extraBody: options.extraBody ?? {},
     };
     this.name = options.name ?? hostOf(options.baseURL);
     this.structuredMode = this.opts.structuredMode;
@@ -83,7 +92,17 @@ export class OpenAICompatProvider implements AIProvider {
         ? [req.system, describeSchema(schema)].filter(Boolean).join("\n\n")
         : req.system;
 
+    // Host knobs go in first so the fields this class computes below always
+    // win: an extra body is for parameters the code does not model, never a
+    // side door around AI_STRUCTURED_MODE. Reserved keys are rejected when the
+    // provider is constructed, so a collision here cannot pass silently.
+    //
+    // The call's own knobs merge over the provider's, which is what makes a
+    // global default plus a per-role override work: set the process-wide
+    // setting once, then let the roles that need something else say so.
     const body: Record<string, unknown> = {
+      ...this.opts.extraBody,
+      ...req.extraBody,
       model: req.model,
       messages: buildMessages(system, req.prompt),
     };

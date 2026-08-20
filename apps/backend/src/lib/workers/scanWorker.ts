@@ -449,11 +449,10 @@ export default async function scanWorkerProcessor(
       console.warn(
         `[worker] Job ${job.id} hit a terminal error — not retrying: ${(err as Error).message}`,
       );
-      // discard() only marks the job non-retryable; the throw below is still
-      // what moves it to 'failed'.
-      await job.discard().catch((e: Error) =>
-        console.error("[worker] job.discard failed:", e.message),
-      );
+      // discard() is synchronous and returns nothing — it only sets the flag
+      // that Job#moveToFailed checks before scheduling a retry. The throw below
+      // is still what moves the job to 'failed'.
+      job.discard();
     }
     throw err;
   }

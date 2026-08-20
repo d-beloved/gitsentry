@@ -1,9 +1,9 @@
 import { extractScannerInput, extractScannablePaths } from "./differ";
 import { detectSecretsInDiff, mergeSecretFindings } from "./secretsDetector";
 import { verifyFindings } from "./verifier";
-import { withAIDeadline } from "./aiDeadline";
+import { withAIDeadline, aiTimeoutMs } from "./aiDeadline";
 import { aiEnv, requireAiEnv } from "./aiEnv";
-import { getProvider, type JsonSchema } from "../../../../packages/ai-provider";
+import { getProvider, extraBodyFor, type JsonSchema } from "../../../../packages/ai-provider";
 
 // Re-exported so callers have one place to import AI error types from.
 export { AITimeoutError } from "./aiDeadline";
@@ -35,6 +35,22 @@ const DISCOVERY_MODEL = requireAiEnv("DISCOVERY_MODEL");
 // VERIFY_FINDINGS=off (e.g. while measuring its effect with the eval harness).
 const VERIFIER_MODEL = aiEnv("VERIFIER_MODEL") || SCAN_MODEL;
 const VERIFY_ENABLED = process.env.VERIFY_FINDINGS !== "off";
+
+// Wall-clock budgets, in two tiers because the calls are not the same shape.
+// The scan is one long generation over a whole diff; discovery and
+// classification are short bounded JSON answers over a file list, so a scan-
+// sized budget there would just mean waiting minutes to learn that an optional
+// enrichment step is not coming. Both are overridable — see aiTimeoutMs().
+const SCAN_TIMEOUT_MS = aiTimeoutMs("SCAN", 300_000);
+const DISCOVERY_TIMEOUT_MS = aiTimeoutMs("DISCOVERY", 60_000);
+
+// Per-role host knobs, resolved at load so a malformed one fails the deploy
+// rather than the first scan of the day. Reasoning is what these are for: the
+// sweep reads a whole repo adversarially and wants it, discovery answers a
+// bounded question off a file list and does not. See extraBodyFor().
+const SCAN_EXTRA_BODY = extraBodyFor("SCAN");
+const SWEEP_EXTRA_BODY = extraBodyFor("SWEEP");
+const DISCOVERY_EXTRA_BODY = extraBodyFor("DISCOVERY");
 
 const CORE_CATEGORIES: [string, string][] = [
   ["hardcoded_secret", "API keys, tokens, passwords, private keys in code"],
@@ -265,12 +281,13 @@ export async function classifyProject(
 
   try {
     const prompt = buildClassifierPrompt(repoFullName, filePaths, manifestContent);
-    const result = await withAIDeadline("classifier", 15_000, (opts) =>
+    const result = await withAIDeadline("classifier", DISCOVERY_TIMEOUT_MS, (opts) =>
       provider.generate({
         model: DISCOVERY_MODEL,
         prompt,
         signal: opts.signal,
         timeoutMs: opts.timeout,
+        extraBody: DISCOVERY_EXTRA_BODY,
       }),
     );
     return {
@@ -293,6 +310,7 @@ export async function analyzeCode(
   const mode = options.mode === "security_sweep" ? "security_sweep" : "diff_scan";
   const classification = options.classification;
   const modelName = mode === "security_sweep" ? SWEEP_MODEL : SCAN_MODEL;
+  const extraBody = mode === "security_sweep" ? SWEEP_EXTRA_BODY : SCAN_EXTRA_BODY;
   let input: string;
   let coverage: ScanCoverage | undefined;
   if (mode === "diff_scan") {
@@ -309,8 +327,7 @@ export async function analyzeCode(
   }
   const prompt = buildPrompt(input, context, mode, classification);
 
-  const AI_TIMEOUT_MS = 120_000;
-  const result = await withAIDeadline("AI call", AI_TIMEOUT_MS, (opts) =>
+  const result = await withAIDeadline("AI call", SCAN_TIMEOUT_MS, (opts) =>
     provider.generate({
       model: modelName,
       prompt,
@@ -318,6 +335,7 @@ export async function analyzeCode(
       schemaName: "analysis",
       signal: opts.signal,
       timeoutMs: opts.timeout,
+      extraBody,
     }),
   );
   const text = result.text;
@@ -513,21 +531,23 @@ Return ONLY valid JSON (no markdown):
 
   try {
     const [authResult, customResult] = await Promise.all([
-      withAIDeadline("discovery", 15_000, (opts) =>
+      withAIDeadline("discovery", DISCOVERY_TIMEOUT_MS, (opts) =>
         provider.generate({
           model: DISCOVERY_MODEL,
           prompt: authPrompt,
           signal: opts.signal,
           timeoutMs: opts.timeout,
+          extraBody: DISCOVERY_EXTRA_BODY,
         }),
       ),
       customContextPrompt
-        ? withAIDeadline("custom context", 15_000, (opts) =>
+        ? withAIDeadline("custom context", DISCOVERY_TIMEOUT_MS, (opts) =>
             provider.generate({
               model: DISCOVERY_MODEL,
               prompt: customContextPrompt,
               signal: opts.signal,
               timeoutMs: opts.timeout,
+              extraBody: DISCOVERY_EXTRA_BODY,
             }),
           )
         : Promise.resolve(null),

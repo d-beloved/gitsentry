@@ -10,6 +10,7 @@
  */
 import { toStrictSchema, describeSchema } from "../../../../../packages/ai-provider/schema";
 import { OpenAICompatProvider } from "../../../../../packages/ai-provider/openaiCompat";
+import { createProvider } from "../../../../../packages/ai-provider";
 import type { JsonSchema } from "../../../../../packages/ai-provider/types";
 
 /** A host serving its own model, and an aggregator routing between several. */
@@ -256,5 +257,104 @@ describe("OpenAICompatProvider — routing and caching", () => {
         prompt: "hi",
       }),
     ).rejects.toThrow(/429.*rate limited/);
+  });
+});
+
+describe("OpenAICompatProvider — extra body", () => {
+  const OK = { choices: [{ message: { content: "{}" } }] };
+
+  it("merges host knobs into every request", async () => {
+    const calls = mockFetch(OK);
+    const provider = new OpenAICompatProvider({
+      apiKey: "k",
+      baseURL: HOST,
+      // The knob that matters in practice: hybrid models think by default, and
+      // a scan that reasons for minutes blows its wall-clock budget.
+      extraBody: { thinking: { type: "disabled" }, reasoning_effort: "low" },
+    });
+
+    await provider.generate({ model: "m", prompt: "p" });
+
+    expect(calls[0].body.thinking).toEqual({ type: "disabled" });
+    expect(calls[0].body.reasoning_effort).toBe("low");
+  });
+
+  it("lets a call's knobs win over the provider's, key by key", async () => {
+    const calls = mockFetch(OK);
+    const provider = new OpenAICompatProvider({
+      apiKey: "k",
+      baseURL: HOST,
+      extraBody: { thinking: { type: "disabled" }, safety: "strict" },
+    });
+
+    // A role overrides only what it names — the global's other fields survive,
+    // which is what lets AI_EXTRA_BODY act as a default rather than an
+    // all-or-nothing switch.
+    await provider.generate({
+      model: "m",
+      prompt: "p",
+      extraBody: { thinking: { type: "enabled" } },
+    });
+
+    expect(calls[0].body.thinking).toEqual({ type: "enabled" });
+    expect(calls[0].body.safety).toBe("strict");
+  });
+
+  it("never lets an extra body displace the prompt or the model", async () => {
+    const calls = mockFetch(OK);
+    const provider = new OpenAICompatProvider({
+      apiKey: "k",
+      baseURL: HOST,
+      extraBody: { model: "smuggled", messages: [] } as Record<string, unknown>,
+    });
+
+    await provider.generate({ model: "m", prompt: "p" });
+
+    expect(calls[0].body.model).toBe("m");
+    expect(calls[0].body.messages).toEqual([{ role: "user", content: "p" }]);
+  });
+});
+
+describe("createProvider — AI_EXTRA_BODY", () => {
+  const saved = { ...process.env };
+
+  beforeEach(() => {
+    process.env.AI_API_KEY = "k";
+    process.env.AI_BASE_URL = HOST;
+  });
+  afterEach(() => {
+    process.env = { ...saved };
+  });
+
+  it("passes a parsed object through to the provider", async () => {
+    const calls = mockFetch({ choices: [{ message: { content: "{}" } }] });
+    process.env.AI_EXTRA_BODY = '{"thinking":{"type":"disabled"}}';
+
+    await createProvider().generate({ model: "m", prompt: "p" });
+
+    expect(calls[0].body.thinking).toEqual({ type: "disabled" });
+  });
+
+  // Each of these would otherwise fail open: the setting silently does nothing,
+  // and the only symptom is a slow, expensive scan that still returns findings.
+  it.each([
+    ["malformed JSON", "{thinking: disabled}", /not valid JSON/],
+    ["a non-object", '"disabled"', /must be a JSON object/],
+    ["a reserved key", '{"response_format":{"type":"text"}}', /owned by AI_STRUCTURED_MODE/],
+  ])("refuses %s at boot", (_label, value, expected) => {
+    process.env.AI_EXTRA_BODY = value;
+    expect(() => createProvider()).toThrow(expected);
+  });
+
+  it("names shell quote-stripping when the value lost its quotes", () => {
+    // What you actually get from `export AI_EXTRA_BODY={"thinking":"x"}` in any
+    // POSIX shell — the quotes are removed before the process ever sees them.
+    process.env.AI_EXTRA_BODY = "{thinking:{type:disabled}}";
+    expect(() => createProvider()).toThrow(/single quotes/);
+  });
+
+  it("is optional", () => {
+    delete process.env.AI_EXTRA_BODY;
+    expect(() => createProvider()).not.toThrow();
   });
 });

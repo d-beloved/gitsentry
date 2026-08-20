@@ -1,6 +1,7 @@
 import type { Finding } from "../../../../packages/scanner-contract/types";
 import type { AIProvider, JsonSchema } from "../../../../packages/ai-provider";
-import { withAIDeadline } from "./aiDeadline";
+import { extraBodyFor } from "../../../../packages/ai-provider";
+import { withAIDeadline, aiTimeoutMs } from "./aiDeadline";
 
 /**
  * Verification (judge) pass — the false-positive firewall.
@@ -17,7 +18,17 @@ import { withAIDeadline } from "./aiDeadline";
  * Deterministic (pattern-verified) findings are never sent to the judge.
  */
 
-const VERIFY_TIMEOUT_MS = 45_000;
+// Roughly a third of the scan budget: the judge re-reads the same scanner
+// input, so it scales with the same prompt, but it emits one verdict line per
+// finding instead of a full analysis. Overridable as AI_VERIFY_TIMEOUT_MS —
+// this pass fails open, so a budget set too low degrades quietly into no
+// verification at all rather than into a visible error.
+const VERIFY_TIMEOUT_MS = aiTimeoutMs("VERIFY", 120_000);
+
+// The judge is the one call that is almost entirely reasoning — it re-reads the
+// scanner input and decides whether a claimed taint path is really there — so
+// this is where a global "thinking off" is most worth overriding.
+const VERIFY_EXTRA_BODY = extraBodyFor("VERIFY");
 
 const VERDICT_SCHEMA: JsonSchema = {
   type: "object",
@@ -141,6 +152,7 @@ export async function verifyFindings(
         schemaName: "verdicts",
         signal: opts.signal,
         timeoutMs: opts.timeout,
+        extraBody: VERIFY_EXTRA_BODY,
       }),
     );
 
