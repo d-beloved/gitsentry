@@ -22,6 +22,7 @@ export type FindingCategory =
   | "command_injection"
   | "nosql_injection"
   | "template_injection"
+  | "prompt_injection"
   | "ssrf"
   | "insecure_file_upload"
   | "sensitive_data_exposure"

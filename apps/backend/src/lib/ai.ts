@@ -92,6 +92,10 @@ const ADVERSARIAL_CATEGORIES: [string, string][] = [
   ],
   ["nosql_injection", "User input altering NoSQL query shape or operators"],
   [
+    "insecure_deserialization",
+    "Untrusted data passed to pickle, unserialize, unsafe YAML, or object deserialisers",
+  ],
+  [
     "template_injection",
     "User input evaluated inside templates or expression engines",
   ],

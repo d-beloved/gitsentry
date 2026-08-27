@@ -34,6 +34,7 @@ const CATEGORY_LABELS: Record<FindingCategory, string> = {
   command_injection: "Command Injection",
   nosql_injection: "NoSQL Injection",
   template_injection: "Template Injection",
+  prompt_injection: "LLM Prompt Injection",
   ssrf: "Server-Side Request Forgery (SSRF)",
   insecure_file_upload: "Insecure File Upload",
   sensitive_data_exposure: "Sensitive Data Exposure",
