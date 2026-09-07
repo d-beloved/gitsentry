@@ -384,13 +384,19 @@ $$;
 
 -- Returns lifetime scan totals per org, used by the admin dashboard.
 -- Accepts an array of org UUIDs and returns one row per org that has repos.
+-- Quota-blocked rows (failure_reason 'quota_exceeded') are ledger entries for
+-- pushes that were never analysed, so they are excluded here for the same reason
+-- VISIBLE_SCAN_FILTER excludes them from every other count. Counting them made a
+-- free org's lifetime total run away from its capped monthly counter.
 CREATE OR REPLACE FUNCTION get_org_lifetime_scans(p_org_ids UUID[])
 RETURNS TABLE(org_id UUID, total BIGINT)
 LANGUAGE sql STABLE SECURITY DEFINER
 AS $$
   SELECT r.org_id, COUNT(s.id)::BIGINT AS total
     FROM repos r
-    LEFT JOIN scans s ON s.repo_id = r.id
+    LEFT JOIN scans s
+      ON s.repo_id = r.id
+     AND (s.failure_reason IS NULL OR s.failure_reason <> 'quota_exceeded')
    WHERE r.org_id = ANY(p_org_ids)
    GROUP BY r.org_id;
 $$;
