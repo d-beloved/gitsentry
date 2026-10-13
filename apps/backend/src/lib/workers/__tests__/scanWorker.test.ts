@@ -1,7 +1,5 @@
 import type { ScanJobData } from "../../../../../../packages/scanner-contract/types";
 
-// The worker pulls in AI, GitHub, DB and notifier modules that all hit external
-// services. Mock them so we can assert the outcome/refund branching in isolation.
 jest.mock("../../ai", () => ({
   analyzeCode: jest.fn(),
 }));
@@ -14,8 +12,7 @@ jest.mock("../../github", () => ({
   postIncompleteCheckRun: jest.fn().mockResolvedValue(undefined),
   postSubscriptionPausedComment: jest.fn().mockResolvedValue(456),
   setupBranchProtection: jest.fn().mockResolvedValue(undefined),
-  // Real implementation: it is pure plan/subscription logic, and which orgs it
-  // admits is exactly what the check-run tests below are asserting.
+  // Real implementation: the check-run tests assert which orgs it admits.
   hasRequiredCheck: jest.requireActual("../../github").hasRequiredCheck,
 }));
 jest.mock("../../securityContext", () => ({
@@ -27,8 +24,7 @@ jest.mock("../../notifier", () => ({
 }));
 jest.mock("../../../db/queries", () => ({
   saveFindings: jest.fn().mockResolvedValue([]),
-  // Returns true = "the row was written". A reaped row returns false, which is
-  // what stops the worker refunding or notifying a second time.
+  // false = reaped row, which stops a second refund/notify.
   updateScanStatus: jest.fn().mockResolvedValue(true),
   getOrgByRepoId: jest.fn(),
   tryClaimScan: jest.fn(),
@@ -39,7 +35,6 @@ jest.mock("../../../db/queries", () => ({
   scanQuotaAlreadyClaimed: jest.fn().mockResolvedValue(false),
   markScanQuotaClaimed: jest.fn().mockResolvedValue(undefined),
   refundScanSlot: jest.fn().mockResolvedValue(undefined),
-  // Default: we still own the scan and it has no prior refund.
   markScanStarted: jest.fn().mockResolvedValue(true),
   getScanRefundState: jest.fn().mockResolvedValue({quotaClaimed: false, creditRefunded: false}),
 }));
@@ -82,9 +77,7 @@ const baseJob: ScanJobData = {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // clearAllMocks wipes call history but leaves implementations in place, so a
-  // test that overrides one of these would otherwise leak into every test after
-  // it. Re-establish the happy-path defaults each time.
+  // clearAllMocks keeps implementations, so reset overridden defaults.
   (markScanStarted as jest.Mock).mockResolvedValue(true);
   (updateScanStatus as jest.Mock).mockResolvedValue(true);
   (scanQuotaAlreadyClaimed as jest.Mock).mockResolvedValue(false);
@@ -126,17 +119,15 @@ describe("processScanJob — scan outcomes", () => {
     });
     (tryClaimScan as jest.Mock).mockResolvedValue(true);
     (scanQuotaAlreadyClaimed as jest.Mock).mockResolvedValue(false);
-    // After the worker claims + marks it, the catch block sees a claimed slot
-    // that has not yet been refunded.
     (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: false});
-    (analyzeCode as jest.Mock).mockRejectedValue(new Error("gemini exploded"));
+    (analyzeCode as jest.Mock).mockRejectedValue(new Error("provider exploded"));
 
-    await expect(processScanJob(baseJob)).rejects.toThrow("gemini exploded");
+    await expect(processScanJob(baseJob)).rejects.toThrow("provider exploded");
 
     expect(refundScanSlot).toHaveBeenCalledWith("org-1", "starter", "2026-07", false);
     expect(updateScanStatus).toHaveBeenLastCalledWith(
       "scan-1", [], expect.any(Number), "failed",
-      { failureReason: "pipeline_error", creditRefunded: true, errorDetail: expect.stringContaining("gemini exploded") },
+      { failureReason: "pipeline_error", creditRefunded: true, errorDetail: expect.stringContaining("provider exploded") },
     );
     expect(notifyScanFailure).toHaveBeenCalledWith("repo-1", "acme/app", "pipeline_error", true, "scan-1");
   });
@@ -167,8 +158,7 @@ describe("processScanJob — reaped scans", () => {
 
     await expect(processScanJob(baseJob)).resolves.toBeUndefined();
 
-    // The whole point: no AI spend, no status write, no second refund, and no
-    // throw (which would send it back through Bull's retry).
+    // No throw either, which would send it back through Bull's retry.
     expect(analyzeCode).not.toHaveBeenCalled();
     expect(updateScanStatus).not.toHaveBeenCalled();
     expect(refundScanSlot).not.toHaveBeenCalled();
@@ -181,15 +171,11 @@ describe("processScanJob — reaped scans", () => {
     });
     (tryClaimScan as jest.Mock).mockResolvedValue(true);
     (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: false});
-    (analyzeCode as jest.Mock).mockRejectedValue(new Error("gemini exploded"));
-    // The reaper took the row while the scan was running, so the guarded write
-    // finds nothing to update.
+    (analyzeCode as jest.Mock).mockRejectedValue(new Error("provider exploded"));
     (updateScanStatus as jest.Mock).mockResolvedValue(false);
 
-    await expect(processScanJob(baseJob)).rejects.toThrow("gemini exploded");
+    await expect(processScanJob(baseJob)).rejects.toThrow("provider exploded");
 
-    // The reaper already refunded this credit — refunding again would hand out
-    // a free scan.
     expect(refundScanSlot).not.toHaveBeenCalled();
     expect(notifyScanFailure).not.toHaveBeenCalled();
   });
@@ -201,13 +187,13 @@ describe("processScanJob — refund is once per claimed slot", () => {
       id: "org-1", plan: "starter", subscription_status: "active", scan_month: "2026-07",
     });
     (tryClaimScan as jest.Mock).mockResolvedValue(true);
-    (analyzeCode as jest.Mock).mockRejectedValue(new Error("gemini exploded"));
+    (analyzeCode as jest.Mock).mockRejectedValue(new Error("provider exploded"));
   });
 
   it("does not refund again on a Bull retry of an already-refunded scan", async () => {
     (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: true});
 
-    await expect(processScanJob(baseJob)).rejects.toThrow("gemini exploded");
+    await expect(processScanJob(baseJob)).rejects.toThrow("provider exploded");
 
     expect(refundScanSlot).not.toHaveBeenCalled();
     expect(updateScanStatus).toHaveBeenLastCalledWith(
@@ -221,10 +207,8 @@ describe("processScanJob — refund is once per claimed slot", () => {
 
     await expect(
       processScanJob(baseJob, { isFinalAttempt: () => false }),
-    ).rejects.toThrow("gemini exploded");
+    ).rejects.toThrow("provider exploded");
 
-    // Releasing it here is what produced free scans: attempt 2 completes, and
-    // the success path never re-takes the slot.
     expect(refundScanSlot).not.toHaveBeenCalled();
     expect(notifyScanFailure).not.toHaveBeenCalled();
     expect(updateScanStatus).toHaveBeenLastCalledWith(
@@ -238,7 +222,7 @@ describe("processScanJob — refund is once per claimed slot", () => {
 
     await expect(
       processScanJob(baseJob, { isFinalAttempt: () => true }),
-    ).rejects.toThrow("gemini exploded");
+    ).rejects.toThrow("provider exploded");
 
     expect(refundScanSlot).toHaveBeenCalledWith("org-1", "starter", "2026-07", false);
     expect(notifyScanFailure).toHaveBeenCalled();
@@ -249,18 +233,15 @@ describe("processScanJob — refund is once per claimed slot", () => {
 
     await expect(
       processScanJob({ ...baseJob, quotaAlreadyClaimed: true }),
-    ).rejects.toThrow("gemini exploded");
+    ).rejects.toThrow("provider exploded");
 
     expect(refundScanSlot).toHaveBeenCalledWith("org-1", "starter", "2026-07", false);
   });
 });
 
-// A `synchronize` scan reads only the incremental diff. Before this, a follow-up
-// commit touching one unrelated file made the scan report zero findings, and the
-// worker rewrote the PR comment to "No security issues found" — retiring a real
-// HIGH nobody had fixed. The scan's blind spot must never read as an all-clear.
+// A `synchronize` scan reads only the incremental diff; its blind spot must
+// never read as an all-clear.
 describe("processScanJob — findings from earlier commits", () => {
-  // Touches src/x.ts and nothing else.
   const incrementalDiff = [
     "diff --git a/src/x.ts b/src/x.ts",
     "index 1111111..2222222 100644",
@@ -302,7 +283,7 @@ describe("processScanJob — findings from earlier commits", () => {
     await processScanJob(syncJob);
 
     expect(postPRReview).toHaveBeenCalledTimes(1);
-    // 4th arg is `carried` — the finding survives into the updated comment.
+    // 4th arg is `carried`.
     expect((postPRReview as jest.Mock).mock.calls[0][3]).toEqual([openHigh]);
   });
 
@@ -326,8 +307,6 @@ describe("processScanJob — findings from earlier commits", () => {
   });
 
   it("lets a finding go once a commit touches the file it lives in", async () => {
-    // Same scan, but this time the diff covers the file the finding is in and
-    // the scanner no longer reports it — that is a real fix, so it clears.
     (getOpenPRFindings as jest.Mock).mockResolvedValue([
       { ...openHigh, file_path: "src/x.ts" },
     ]);
@@ -348,9 +327,7 @@ describe("processScanJob — findings from earlier commits", () => {
   });
 
   it("updates a comment that is showing carried findings once they are gone", async () => {
-    // The previous scan reported nothing of its own (hadFindings false) but its
-    // comment was displaying a carried finding. That finding has since been
-    // fixed, so the comment has to be refreshed rather than left frozen.
+    // hadFindings is false but the comment was showing a carried finding.
     (getPreviousPRCommentId as jest.Mock).mockResolvedValue({commentId: 999, hadFindings: false});
     (getOpenPRFindings as jest.Mock).mockResolvedValue([
       { ...openHigh, file_path: "src/x.ts" },
@@ -363,18 +340,13 @@ describe("processScanJob — findings from earlier commits", () => {
   });
 });
 
-// A repo where our check is required blocks the merge until *something* reports
-// on the head sha. Every early return below used to report nothing, which left
-// the PR on "Expected — waiting for status to be reported" permanently. These
-// assert both halves of the policy: benign skips resolve the check so the PR can
-// merge, a scan that failed holds it.
+// Benign skips resolve a required check so the PR can merge; a failed scan holds it.
 describe("processScanJob — required check resolution", () => {
   const PRO = {
     id: "org-1", plan: "pro", subscription_status: "active", scan_month: "2026-07",
   };
 
-  // The paused comment is posted from a floating async IIFE so it never blocks
-  // the skip; let its microtasks drain before asserting.
+  // The paused comment is posted from a floating async IIFE; let it drain.
   const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 
   it("releases the check when a Pro org is out of scans", async () => {
@@ -400,8 +372,7 @@ describe("processScanJob — required check resolution", () => {
   });
 
   it("releases the check and says so on the PR when the subscription has lapsed", async () => {
-    // Paddle sets plan:"free" on lapse, but the branch protection we set up
-    // while they were paying is still there — so the check still has to resolve.
+    // plan is "free" after lapse, but our branch protection may remain.
     (getOrgByRepoId as jest.Mock).mockResolvedValue({
       id: "org-1", plan: "free", subscription_status: "canceled", scan_month: "2026-07",
     });
@@ -420,8 +391,6 @@ describe("processScanJob — required check resolution", () => {
 
     await processScanJob(baseJob);
 
-    // Deliberately ungated: with no org we cannot tell whether the repo carries
-    // our check, and guessing wrong strands a PR nobody can merge.
     expect(postSkippedCheckRun).toHaveBeenCalledWith("acme/app", "abc1234", 42, "no_org");
   });
 
@@ -429,9 +398,9 @@ describe("processScanJob — required check resolution", () => {
     (getOrgByRepoId as jest.Mock).mockResolvedValue(PRO);
     (tryClaimScan as jest.Mock).mockResolvedValue(true);
     (getScanRefundState as jest.Mock).mockResolvedValue({quotaClaimed: true, creditRefunded: false});
-    (analyzeCode as jest.Mock).mockRejectedValue(new Error("gemini exploded"));
+    (analyzeCode as jest.Mock).mockRejectedValue(new Error("provider exploded"));
 
-    await expect(processScanJob(baseJob)).rejects.toThrow("gemini exploded");
+    await expect(processScanJob(baseJob)).rejects.toThrow("provider exploded");
 
     expect(postIncompleteCheckRun).toHaveBeenCalledWith("acme/app", "abc1234", 42, true);
     expect(postSkippedCheckRun).not.toHaveBeenCalled();
@@ -446,7 +415,6 @@ describe("processScanJob — required check resolution", () => {
       processScanJob(baseJob, { isFinalAttempt: () => false }),
     ).rejects.toThrow("transient");
 
-    // Otherwise attempt 1's red check sits in the PR next to attempt 3's green.
     expect(postIncompleteCheckRun).not.toHaveBeenCalled();
   });
 

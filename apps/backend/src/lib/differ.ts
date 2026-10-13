@@ -15,10 +15,8 @@ const SKIP_FILE_PATTERNS = [
   /\.snap$/,
 ];
 
-// Files that rarely carry exploitable code. Under diff-budget pressure these
-// are degraded first (context stripped, then dropped entirely) so that
-// application code keeps its full context. Note: json/yaml/env-style config
-// is intentionally NOT here — config files are a prime home for secrets.
+// Degraded first under budget pressure. Config (json/yaml/env) is deliberately
+// excluded: config files are a prime home for secrets.
 const LOW_RISK_FILE_PATTERNS = [
   /\.(md|mdx|txt|rst|adoc)$/i,
   /\.(css|scss|less|styl)$/i,
@@ -47,7 +45,7 @@ export function parseDiffStats(diffText: string | null | undefined): DiffStats {
       }
     }
   } catch {
-    // parse-diff can choke on unusual diffs — degrade gracefully
+    // parse-diff can choke on unusual diffs.
   }
 
   return { filesChanged, linesAdded };
@@ -61,9 +59,8 @@ export function truncateDiff(diffText: string, maxBytes: number = MAX_DIFF_BYTES
 interface FileBlock {
   path: string;
   lowRisk: boolean;
-  /** Added + removed + unchanged-context lines. */
   full: string;
-  /** Added + removed lines only — used under budget pressure. */
+  /** Added + removed lines only, no context. */
   compact: string;
 }
 
@@ -96,14 +93,12 @@ function buildFileBlocks(diffText: string): FileBlock[] {
           full.push(line);
           compact.push(line);
         } else if (change.type === "del") {
-          // Removed lines no longer exist in the new file — label with the old
-          // line number so the model can flag deleted security controls while
-          // anchoring findings to nearby remaining lines.
+          // Old line number: lets the model flag deleted security controls.
           const line = `- (was L${change.ln}): ${change.content.slice(1)}`;
           full.push(line);
           compact.push(line);
         } else if (change.type === "normal") {
-          // ln2 = line number in the new file for unchanged context lines
+          // ln2 = line number in the new file.
           const ln = (change as { ln2?: number; ln1?: number }).ln2 ?? (change as { ln1?: number }).ln1 ?? "";
           full.push(`  L${ln}: ${change.content.slice(1)}`);
         }
@@ -126,24 +121,7 @@ export interface ExtractedDiff {
   coverage: ScanCoverage;
 }
 
-/**
- * Builds the scanner input from a diff: added AND removed lines plus
- * surrounding unchanged context. Context lets the AI see auth checks and
- * guards near the changed hunk; removed lines let it flag deleted security
- * controls (an auth middleware deleted by a PR is invisible in an
- * additions-only extract).
- *
- * When the result exceeds maxBytes, degrade in priority order instead of
- * blindly slicing bytes off the tail (which silently un-scanned whichever
- * files happened to sort last):
- *   1. strip context lines from low-risk files (docs/styles/images)
- *   2. drop low-risk files entirely
- *   3. strip context lines from all files
- *   4. drop whole files from the end until the budget fits
- * Dropped files are named in a trailing note so the model knows they exist
- * but were not scanned, and coverage is reported to the caller for surfacing
- * in the PR comment.
- */
+/** Over budget, degrades by priority instead of slicing bytes; dropped files are named and reported. */
 export function extractScannerInput(
   diffText: string | null | undefined,
   maxBytes: number = MAX_DIFF_BYTES,
@@ -155,7 +133,7 @@ export function extractScannerInput(
   try {
     blocks = buildFileBlocks(diffText);
   } catch {
-    // parse-diff can choke on unusual diffs — fall back to raw diff
+    // parse-diff can choke on unusual diffs; fall back to the raw diff.
     return {
       text: diffText.slice(0, maxBytes),
       coverage: { filesTotal: 0, filesScanned: 0, truncated: diffText.length > maxBytes },
@@ -214,8 +192,7 @@ export function extractScannerInput(
       droppedPaths.push(block.path);
       continue;
     }
-    // Always include at least one file, hard-sliced if a single file exceeds
-    // the entire budget.
+    // Always include at least one file, hard-sliced if it alone exceeds the budget.
     included.push(
       block.compact.length > maxBytes ? block.compact.slice(0, maxBytes) : block.compact,
     );
@@ -240,10 +217,6 @@ function withDroppedNote(rendered: string[], droppedPaths: string[]): string {
   );
 }
 
-/**
- * Back-compat wrapper — returns only the scanner input text.
- * Prefer extractScannerInput when coverage information is needed.
- */
 export function extractWithContext(
   diffText: string | null | undefined,
   maxBytes: number = MAX_DIFF_BYTES,
@@ -251,16 +224,7 @@ export function extractWithContext(
   return extractScannerInput(diffText, maxBytes).text;
 }
 
-/**
- * Returns the file paths the scanner actually sees — non-skipped files that
- * contain at least one added or removed line (the same selection
- * extractScannerInput emits). Used to validate that AI findings reference a
- * file present in the scanned diff, which guards against the model
- * hallucinating findings for files not in the PR.
- *
- * Returns [] when the diff is empty or parse-diff fails. Callers must treat an
- * empty result as "could not determine" and fail open (do not suppress findings).
- */
+/** Paths the scanner sees. [] means "could not determine": callers must fail open. */
 export function extractScannablePaths(
   diffText: string | null | undefined,
 ): string[] {
@@ -285,18 +249,7 @@ export function extractScannablePaths(
   return [...new Set(paths)];
 }
 
-/**
- * True when the diff contains at least one file worth scanning after stripping
- * lockfiles, minified bundles, and other generated artifacts (SKIP_FILE_PATTERNS).
- * A lockfile/generated-only PR yields empty scanner input, which the AI tends to
- * fill with hallucinated findings — skip those scans entirely.
- *
- * Deletion-only changes count as scannable: a PR that removes an auth check or
- * validation call is exactly the kind of regression the scanner must see.
- *
- * Fails open: returns true when parse-diff chokes (extractScannerInput falls
- * back to the raw diff in that case) or when the diff lists no files at all.
- */
+/** Deletion-only changes count as scannable; fails open when parsing fails or no files are listed. */
 export function hasScannableContent(diffText: string | null | undefined): boolean {
   if (!diffText) return false;
 
@@ -311,8 +264,6 @@ export function hasScannableContent(diffText: string | null | undefined): boolea
         return true;
       }
     }
-    // Parsed cleanly: files present but all skipped → nothing to scan.
-    // No files at all is unusual — fail open rather than silently drop.
     return !sawAnyFile;
   } catch {
     return true;

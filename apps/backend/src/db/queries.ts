@@ -10,7 +10,7 @@ import type {
   OrgWithUsage,
 } from "./types";
 
-// ─── Repos ────────────────────────────────────────────────────────────────────
+// Repos
 
 export async function getOrCreateOrg(params: {
   githubId: number;
@@ -72,7 +72,7 @@ export async function getOrgByInstallationId(
   return (data?.orgs as unknown as OrgWithUsage) ?? null;
 }
 
-// ─── Scans ────────────────────────────────────────────────────────────────────
+// Scans
 
 export async function getRepoIdByFullName(repoFullName: string): Promise<string | null> {
   const {data} = await supabase
@@ -172,8 +172,7 @@ export async function saveScan(params: {
 
 export type ScanStatus = "complete" | "failed" | "skipped";
 
-// Why a scan did not complete. 'skipped' outcomes are benign (the scan was
-// intentionally not run); 'failed' outcomes are real pipeline errors.
+// 'skipped' reasons are benign (intentionally not run); 'failed' reasons are real pipeline errors.
 export type ScanFailureReason =
   | "quota_exceeded"
   | "subscription_inactive"
@@ -193,14 +192,9 @@ export async function updateScanStatus(
     modelName?: string;
     failureReason?: ScanFailureReason;
     creditRefunded?: boolean;
-    /** Raw exception message for admin diagnosis — never shown to customers. */
+    /** Admin-only; never shown to customers. */
     errorDetail?: string;
-    /**
-     * The files this scan actually looked at. Only findings living in one of
-     * these paths can be superseded by this scan's result — see
-     * markStaleFindings. Omitting it supersedes nothing, which is the safe
-     * default for callers that never ran a diff (skips, failures).
-     */
+    /** Files this scan read; only findings in these can be marked stale. Omit to supersede nothing. */
     examinedPaths?: string[];
   },
 ): Promise<boolean> {
@@ -219,20 +213,15 @@ export async function updateScanStatus(
       medium_count: medium,
       low_count: low,
       duration_ms: durationMs,
-      // Clear on success, set on skip/failure — so a re-run that finally
-      // completes doesn't leave a stale reason/detail behind.
+      // Cleared on success so a retry that completes leaves no stale reason behind.
       failure_reason: opts?.failureReason ?? null,
       error_detail: errorDetail,
       ...(opts?.creditRefunded != null ? { credit_refunded: opts.creditRefunded } : {}),
       ...(hasTokens ? { tokens_in: opts?.tokensIn ?? 0, tokens_out: opts?.tokensOut ?? 0, ai_model: opts?.modelName ?? null } : {}),
     })
     .eq("id", scanId)
-    // Tombstone guard (migration 007). The reaper has already closed this row out
-    // and refunded the credit; a worker that finishes afterwards must not flip it
-    // back to 'complete' and post results against a scan the customer was told
-    // had failed. Deliberately keyed on reaped_at and NOT on status: a scan that
-    // failed on Bull attempt 1 has status='failed' with reaped_at NULL, and its
-    // retry must still be able to overwrite that failure on success.
+    // Tombstone guard: a reaped (refunded) scan must not flip back to 'complete'. Keyed on
+    // reaped_at, not status, so a Bull retry can still overwrite its own earlier failure.
     .is("reaped_at", null)
     .select("id");
 
@@ -258,10 +247,7 @@ export async function updateScanStatus(
   return true;
 }
 
-// ─── AI usage ledger ────────────────────────────────────────────────────────────
-// Records every AI provider call regardless of which feature made it, so the
-// finance dashboard can account for total spend rather than just the main
-// scan/sweep call. See docs/migrations/002_ai_usage_ledger.sql.
+// AI usage ledger: one row per provider call, for total-spend accounting.
 
 export type AiUsageSurface = "pr_scan" | "security_sweep" | "discovery" | "classifier";
 
@@ -287,7 +273,7 @@ export async function recordAiUsage(params: {
   if (error) console.error("[ai_usage] recordAiUsage failed:", error.message);
 }
 
-// ─── Findings ─────────────────────────────────────────────────────────────────
+// Findings
 
 export async function saveFindings(
   scanId: string,
@@ -335,7 +321,6 @@ export async function saveFindings(
   }));
 }
 
-/** Returns the findings count of the last completed scan for a PR, or null if none exists yet. */
 export async function getLastPRScanResult(
   repoFullName: string,
   prNumber: number,
@@ -364,7 +349,6 @@ export async function getLastPRScanResult(
   return {findingsCount: row.findings_count ?? 0};
 }
 
-/** Returns the comment ID and whether the previous scan had findings, or null if no prior comment exists. */
 export async function getPreviousPRCommentId(
   repoId: string,
   prNumber: number,
@@ -384,7 +368,6 @@ export async function getPreviousPRCommentId(
   return {commentId: row.gh_comment_id, hadFindings: (row.findings_count ?? 0) > 0};
 }
 
-/** Persists the GitHub comment ID returned after posting/updating a PR comment. */
 export async function updateScanCommentId(
   scanId: string,
   commentId: number,
@@ -395,7 +378,7 @@ export async function updateScanCommentId(
     .eq("id", scanId);
 }
 
-// ─── Public stats ─────────────────────────────────────────────────────────────
+// Public stats
 
 async function updatePublicStats(params: {
   findings: number;
@@ -423,24 +406,8 @@ async function updatePublicStats(params: {
   if (error) throw new Error(`updatePublicStats: ${error.message}`);
 }
 
-/**
- * Marks open findings from previous scans of the same repo+trigger as stale when
- * a newer scan completes — but ONLY those living in a file the new scan actually
- * examined (`examinedPaths`).
- *
- * The scope matters because a `synchronize` scan reads the incremental diff
- * (see handlePR), so a follow-up commit that touches one unrelated file used to
- * retire every finding on the PR — including ones in files the scanner never
- * re-read. That is how a real HIGH could be silently retired by a six-line
- * README fix. "The newest scan didn't report it" is only evidence of a fix when
- * the newest scan looked at the file in the first place.
- *
- * A file deleted by this scan's diff still appears in examinedPaths
- * (extractScannablePaths counts deletions), so removing vulnerable code retires
- * its findings exactly as it should.
- *
- * Passing an empty examinedPaths supersedes nothing — the safe default.
- */
+// Only findings in files this scan examined may go stale: a `synchronize` scan sees just the
+// incremental diff, so its silence about other files is not evidence of a fix.
 async function markStaleFindings(
   scanId: string,
   examinedPaths: string[],
@@ -476,12 +443,7 @@ async function markStaleFindings(
     .eq("is_stale", false);
 }
 
-/**
- * Open findings raised by earlier scans of the same PR that are still live:
- * not resolved, not dismissed, and not superseded by a later scan that re-read
- * their file. The worker carries these into the PR comment so a scan of a
- * narrow incremental diff can't present the PR as clean.
- */
+/** Still-open findings from earlier scans of this PR, so a narrow incremental scan can't read as clean. */
 export async function getOpenPRFindings(
   repoId: string,
   prNumber: number,
@@ -530,13 +492,12 @@ async function getPublicStats(): Promise<PublicStatsRow | null> {
   return data as PublicStatsRow;
 }
 
-// ─── Security sweep ───────────────────────────────────────────────────────────
+// Security sweep
 
 export async function saveSweepScan(
   repoId: string,
   branch: string,
 ): Promise<ScanRow> {
-  // Mark active — a successful sweep confirms the installation is working
   await supabase.from("repos").update({is_active: true}).eq("id", repoId);
 
   const {data, error} = await supabase
@@ -558,8 +519,7 @@ export async function saveSweepScan(
   return data as ScanRow;
 }
 
-// Atomically claims the one-time sweep trial for non-pro orgs.
-// Returns true if the slot was claimed (sweep_trials_used was 0), false if already used.
+// Atomically claims the one-time sweep trial; false if already used.
 export async function tryClaimSweepTrial(orgId: string): Promise<boolean> {
   const {data, error} = await supabase
     .from("orgs")
@@ -577,7 +537,6 @@ export async function tryClaimSweepTrial(orgId: string): Promise<boolean> {
   return !!((data as Array<{id: string}> | null)?.length);
 }
 
-// Resets sweep_trials_used to 0 — called when the sweep fails before producing results.
 export async function refundSweepTrial(orgId: string): Promise<void> {
   await supabase
     .from("orgs")
@@ -585,11 +544,8 @@ export async function refundSweepTrial(orgId: string): Promise<void> {
     .eq("id", orgId);
 }
 
-// Atomically claims a monthly sweep slot for Starter and Pro orgs.
-// Uses the same SELECT...FOR UPDATE pattern as try_claim_scan to prevent races.
-// For paid plans, pass the org's stored sweep_month so the RPC never resets on a
-// calendar boundary — only Paddle's transaction.completed webhook resets the counter.
-// For free users this path is never reached (they use tryClaimSweepTrial instead).
+// Paid plans pass their stored sweep_month so the counter resets only on the Paddle
+// renewal webhook, never on a calendar boundary.
 export async function tryClaimMonthlySweep(
   orgId: string,
   sweepLimit: number,
@@ -617,8 +573,6 @@ export async function tryClaimMonthlySweep(
   return !!data;
 }
 
-// Atomically decrements sweep_count_month by 1 — called when a sweep fails before
-// producing results so the user is not charged for a broken run.
 export async function refundMonthlySweep(orgId: string): Promise<void> {
   const {error} = await supabase.rpc("refund_sweep", {p_org_id: orgId});
   if (error) {
@@ -626,7 +580,7 @@ export async function refundMonthlySweep(orgId: string): Promise<void> {
   }
 }
 
-// ─── Billing helpers ──────────────────────────────────────────────────────────
+// Billing helpers
 
 export async function getOrgByRepoId(
   repoId: string,
@@ -654,15 +608,12 @@ export async function getRepoRow(
   return data as {github_id: number; full_name: string; org_id: string | null; is_private: boolean} | null;
 }
 
-// Confirms that the given repo is actually owned by the given GitHub App
-// installation by cross-referencing the installations table. This prevents IDOR
-// where a caller mixes a repoId from org A with an installationId from org B,
-// and also guards against a stale installation_id column on the repos row.
+// Prevents IDOR (repoId from org A + installationId from org B) and guards against a
+// stale installation_id on the repos row by cross-checking the installations table.
 export async function verifyRepoInstallation(
   repoId: string,
   installationId: number,
 ): Promise<boolean> {
-  // Primary check: the repo's recorded installation_id must match
   const {data: repoData} = await supabase
     .from("repos")
     .select("id, org_id")
@@ -672,9 +623,6 @@ export async function verifyRepoInstallation(
 
   if (!repoData) return false;
 
-  // Secondary check: cross-reference through the installations table to confirm
-  // the installation actually belongs to the same org as the repo, guarding
-  // against a stale installation_id in the repos row.
   const {data: installData} = await supabase
     .from("installations")
     .select("org_id")
@@ -685,14 +633,13 @@ export async function verifyRepoInstallation(
   return installData.org_id === (repoData as {id: string; org_id: string | null}).org_id;
 }
 
-// ─── Repo security context ────────────────────────────────────────────────────
+// Repo security context
 
 export interface CachedSecurityContext {
   context: string;
   updatedAt: string | null;
 }
 
-/** Returns the stored per-repo security context + when it was last discovered, or null if not yet discovered. */
 export async function getRepoSecurityContext(repoId: string): Promise<CachedSecurityContext | null> {
   const {data} = await supabase
     .from("repos")
@@ -704,7 +651,6 @@ export async function getRepoSecurityContext(repoId: string): Promise<CachedSecu
   return {context: row.security_context, updatedAt: row.security_context_updated_at};
 }
 
-/** Persists the per-repo security context (discovered patterns + learned false-positive rules). */
 export async function saveRepoSecurityContext(repoId: string, context: string): Promise<void> {
   await supabase
     .from("repos")
@@ -712,10 +658,7 @@ export async function saveRepoSecurityContext(repoId: string, context: string): 
     .eq("id", repoId);
 }
 
-/**
- * Returns categories that have been marked as false positives 2+ times in this
- * repo. Used to append learned suppression rules to the security context.
- */
+/** Categories dismissed as false positives 2+ times in this repo (learned suppression rules). */
 export async function getFalsePositivePatterns(
   repoId: string,
 ): Promise<{category: string; count: number}[]> {
@@ -737,16 +680,7 @@ export async function getFalsePositivePatterns(
     .map(([category, count]) => ({category, count}));
 }
 
-// Atomically checks the monthly scan limit and increments the counter in one
-// operation, eliminating the TOCTOU race in the old SELECT-then-UPDATE pattern.
-// Returns true if a scan slot was claimed, false if the limit was already reached.
-// For paid plans, pass the org's stored scan_month so the RPC never resets on a
-// calendar boundary — only Paddle's transaction.completed webhook resets the counter.
-/**
- * Idempotency marker for quota claims. The worker checks this before claiming
- * a quota slot so a Bull retry of a scan that already claimed (then failed
- * later in the pipeline) never consumes a second slot.
- */
+/** Quota-claim idempotency marker, so a Bull retry never consumes a second slot. */
 export async function scanQuotaAlreadyClaimed(scanId: string): Promise<boolean> {
   const {data, error} = await supabase
     .from("scans")
@@ -754,7 +688,7 @@ export async function scanQuotaAlreadyClaimed(scanId: string): Promise<boolean> 
     .eq("id", scanId)
     .single();
   if (error) {
-    // Unknown state — treat as unclaimed; worst case matches old behaviour.
+    // Unknown state: treat as unclaimed.
     console.error("[db] scanQuotaAlreadyClaimed failed:", error.message);
     return false;
   }
@@ -769,23 +703,17 @@ export async function markScanQuotaClaimed(scanId: string): Promise<void> {
   if (error) console.error("[db] markScanQuotaClaimed failed:", error.message);
 }
 
-// ─── Stranded scan recovery ─────────────────────────────────────────────────
-// A scan row is created as 'pending' before the job is dispatched. If the queue
-// accepts the job but the worker never runs it (Redis throttled, dropped by a
-// non-persistent Redis on restart, worker killed mid-job), the row stays
-// 'pending' forever: the customer paid a credit and the dashboard shows a scan
-// that never resolves. The reaper finds those rows and closes them out
-// truthfully. See lib/reaper.ts.
+// Stranded scan recovery: rows left 'pending' by a dropped job or dead worker (see lib/reaper.ts).
 
 export interface StrandedScanRow {
   id: string;
   repo_id: string;
   created_at: string;
-  /** Null until the worker picks the job up. See markScanStarted. */
+  /** Null until the worker picks the job up. */
   started_at: string | null;
   quota_claimed: boolean | null;
   credit_refunded: boolean | null;
-  /** 'pull_request' | 'push_main' | 'push_branch'. */
+  /** 'pull_request' | 'push_main' | 'push_branch' */
   trigger_type: string;
   /** The PR number, as a string, when trigger_type is 'pull_request'. */
   trigger_ref: string;
@@ -793,27 +721,13 @@ export interface StrandedScanRow {
   repos: {full_name: string; installation_id: number | null} | null;
 }
 
-// commit_sha/trigger_*/installation_id are here for the check run the reaper
-// closes out — see closeOutCheckRun in reaper.ts.
+// commit_sha/trigger_*/installation_id are for the check run the reaper closes out.
 const STRANDED_COLUMNS =
   "id, repo_id, created_at, started_at, quota_claimed, credit_refunded, " +
   "trigger_type, trigger_ref, commit_sha, repos(full_name, installation_id)";
 
-/**
- * Scans that are stuck rather than merely waiting. The two cases need different
- * clocks, so they are two queries rather than one cutoff:
- *
- *   never consumed (started_at IS NULL)  — judged by queue age. A job Redis
- *     dropped looks identical to one queued behind a backlog, so this threshold
- *     has to sit beyond any plausible queue wait (see SCAN_QUEUE_TIMEOUT_MINUTES).
- *
- *   died mid-run (started_at IS NOT NULL) — judged by run age, measured from the
- *     current attempt's pickup. No healthy scan runs this long, so this one can
- *     be tight without risking a false positive.
- *
- * The sets are disjoint by construction (started_at null vs not null), so the
- * union needs no dedup.
- */
+// Never-started scans are judged by queue age (must exceed any plausible backlog wait);
+// started scans by run age of the current attempt. The two sets are disjoint.
 export async function getStrandedScans(
   queueCutoffIso: string,
   runCutoffIso: string,
@@ -850,22 +764,14 @@ export async function getStrandedScans(
     ...((stalledMidRun.data ?? []) as unknown as StrandedScanRow[]),
   ];
 
-  // Oldest first across both sets, and re-cap: each query applied `limit`
-  // independently, so the union can be up to 2x it.
+  // Re-cap: each query applied `limit` independently, so the union can be up to 2x.
   return rows
     .sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
     .slice(0, limit);
 }
 
-/**
- * Stamps the current attempt's pickup time, and doubles as the worker's
- * permission check: the `reaped_at IS NULL` filter means a scan the reaper has
- * already closed out returns false, and the worker abandons it before spending
- * a single AI token on results nobody will accept.
- *
- * Re-stamped on every Bull retry on purpose — started_at means "this attempt
- * began at", which is what the run-age threshold above needs.
- */
+// Stamps this attempt's start (re-stamped per retry). Returns false for a reaped scan,
+// so the worker abandons it before spending any tokens.
 export async function markScanStarted(scanId: string): Promise<boolean> {
   const {data, error} = await supabase
     .from("scans")
@@ -875,8 +781,7 @@ export async function markScanStarted(scanId: string): Promise<boolean> {
     .select("id");
 
   if (error) {
-    // Fail open: a stamping failure must not stop a scan that is otherwise fine.
-    // Worst case the reaper judges this row by queue age, which is the old behaviour.
+    // Fail open: worst case the reaper judges this row by queue age.
     console.error("[db] markScanStarted failed:", error.message);
     return true;
   }
@@ -894,9 +799,7 @@ export async function getScanRefundState(
     .single();
 
   if (error) {
-    // Unknown state — claim "already refunded" so we err towards not refunding
-    // twice. An unrefunded credit is recoverable by support; an over-refund
-    // silently hands out free scans.
+    // Unknown state: report "already refunded". A missed refund is recoverable; a double refund isn't.
     console.error("[db] getScanRefundState failed:", error.message);
     return {quotaClaimed: false, creditRefunded: true};
   }
@@ -906,13 +809,8 @@ export async function getScanRefundState(
   };
 }
 
-/**
- * Flips a stranded scan 'pending' → 'failed'. The status filter makes this the
- * atomic claim: if two backend instances reap concurrently — or the worker
- * finally wakes up and completes the scan first — only the caller that actually
- * changed the row gets a row back, so the credit is refunded exactly once.
- * Returns false when someone else got there first.
- */
+// The status='pending' filter makes this an atomic claim: only one reaper (or the worker)
+// wins, so the credit is refunded exactly once. False when someone else got there first.
 export async function claimStrandedScan(
   scanId: string,
   errorDetail: string,
@@ -923,8 +821,7 @@ export async function claimStrandedScan(
       status: "failed",
       failure_reason: "pipeline_error",
       error_detail: errorDetail.slice(0, 2000),
-      // Tombstone (migration 007) — updateScanStatus refuses to write once this
-      // is set, so a worker that wakes up later cannot undo this row.
+      // Tombstone: updateScanStatus refuses to write once set.
       reaped_at: new Date().toISOString(),
       findings_count: 0,
       critical_count: 0,
@@ -951,6 +848,7 @@ export async function markScanCreditRefunded(scanId: string): Promise<void> {
   if (error) console.error("[db] markScanCreditRefunded failed:", error.message);
 }
 
+// Paid plans pass their stored scan_month so the counter resets only on the Paddle renewal webhook.
 export async function tryClaimScan(
   orgId: string,
   scanLimit: number,
@@ -969,8 +867,7 @@ export async function tryClaimScan(
     p_limit: scanLimit,
   });
   if (error) {
-    // Fail closed: a broken quota mechanism must block scans rather than grant
-    // unlimited free access. Operators must ensure try_claim_scan exists in Supabase.
+    // Fail closed: a broken quota mechanism must block scans, not grant unlimited access.
     console.error(
       "[db] tryClaimScan rpc error — quota enforcement BLOCKED (fail-closed). Ensure the try_claim_scan function exists in your Supabase project:",
       error.message,
@@ -980,11 +877,7 @@ export async function tryClaimScan(
   return !!data;
 }
 
-// Releases one monthly scan slot previously claimed via tryClaimScan. Called
-// when a scan errors after claiming its slot but before producing results, so a
-// genuine failure never costs the customer a scan. effectiveMonth is derived the
-// same way as tryClaimScan so the refund lands in the exact billing month the
-// slot was claimed in (refund_scan no-ops if the month has since rolled over).
+// effectiveMonth must match tryClaimScan's so the refund lands in the claim's billing month.
 export async function refundScanSlot(
   orgId: string,
   plan: string = "free",
@@ -1003,7 +896,7 @@ export async function refundScanSlot(
   if (error) console.error("[db] refundScanSlot rpc error:", error.message);
 }
 
-// ─── Eval runs ────────────────────────────────────────────────────────────────
+// Eval runs
 
 export async function createEvalRun(params: {
   label: string | null;
@@ -1033,13 +926,7 @@ export async function createEvalRun(params: {
   return data.id as string;
 }
 
-/**
- * Writes one fixture's result as it finishes.
- *
- * Upsert rather than insert so a resumed or re-run sweep overwrites its earlier
- * attempt instead of double-counting the fixture. A failure here is logged, not
- * thrown — losing one case's detail should not abort a three-minute sweep.
- */
+// Upsert so a re-run overwrites rather than double-counts; errors are logged, not thrown.
 export async function saveEvalCase(
   runId: string,
   c: {
@@ -1081,7 +968,6 @@ export async function saveEvalCase(
 
   if (error) console.error("[eval] saveEvalCase failed:", error.message);
 
-  // Drives the progress readout on /admin/eval while the sweep is still going.
   const {error: progressError} = await supabase
     .from("eval_runs")
     .update({fixtures_done: fixturesDone})
@@ -1124,8 +1010,7 @@ export async function completeEvalRun(
   if (error) console.error("[eval] completeEvalRun failed:", error.message);
 }
 
-/** Marks a run failed. Only reached when the sweep itself dies — per-fixture
- *  errors are recorded on the case and the run still completes. */
+/** Only for a sweep that dies; per-fixture errors are recorded on the case. */
 export async function failEvalRun(runId: string, message: string): Promise<void> {
   const {error} = await supabase
     .from("eval_runs")
@@ -1139,8 +1024,7 @@ export async function failEvalRun(runId: string, message: string): Promise<void>
   if (error) console.error("[eval] failEvalRun failed:", error.message);
 }
 
-/** True when a sweep is already in flight — evals are slow and serial, and two
- *  at once would contend for the same rate limit and skew both. */
+/** Two concurrent evals would contend for the same rate limit and skew both. */
 export async function evalRunInFlight(): Promise<boolean> {
   const {data, error} = await supabase
     .from("eval_runs")

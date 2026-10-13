@@ -18,8 +18,7 @@ function getTtlDays(): number {
 }
 
 function isStale(updatedAt: string | null, ttlDays: number): boolean {
-  // Defensive — saveRepoSecurityContext always sets this, but treat a missing
-  // timestamp as stale rather than trusting an undated cache indefinitely.
+  // Never trust an undated cache indefinitely.
   if (!updatedAt) return true;
   const ageMs = Date.now() - new Date(updatedAt).getTime();
   return ageMs > ttlDays * 24 * 60 * 60 * 1000;
@@ -29,12 +28,7 @@ function touchesAuthFiles(diffPaths: string[]): boolean {
   return diffPaths.some((p) => isAuthRelevantPath(p));
 }
 
-/**
- * Appends learned false-positive notes to the security context — categories
- * dismissed 2+ times in this repo. Queried fresh on every call (cheap DB read,
- * no AI tokens) regardless of whether discovery itself was refreshed, since
- * dismissals happen continuously and shouldn't wait on the discovery TTL.
- */
+// Queried fresh every call: dismissals shouldn't wait on the discovery TTL.
 async function withFalsePositiveNotes(repoId: string, context: string): Promise<string> {
   const patterns = await getFalsePositivePatterns(repoId).catch((err: Error) => {
     console.error("[securityContext] getFalsePositivePatterns failed:", err.message);
@@ -53,19 +47,7 @@ export interface ResolvedSecurityContext {
   classification?: ProjectClassification;
 }
 
-/**
- * Returns the repo's cached security context plus a fresh project-type
- * classification, refreshing the discovery cache when:
- *  - it has never been discovered for this repo,
- *  - this diff touches a known auth-file path or .gitsentry/context.md
- *    (the cache could now be wrong about how auth/authz works), or
- *  - the cache is older than DISCOVERY_CACHE_TTL_DAYS (default 90) — catches
- *    drift that doesn't show up as a local file change, e.g. an external
- *    auth gateway being added or removed.
- * The classifier always re-runs (cheap, no extra file fetches) regardless of
- * cache freshness, so project-type rules stay accurate scan to scan.
- * Used by both the per-PR scan worker and the security-sweep endpoint.
- */
+/** Cached discovery (refreshed when missing, auth files touched, or past TTL) plus a fresh classification. */
 export async function resolveSecurityContext(params: {
   repoId: string;
   repoFullName: string;
@@ -117,9 +99,7 @@ export async function resolveSecurityContext(params: {
       classifyProject(allPaths, repoFullName, manifestContent ?? undefined),
     ]);
 
-    // No fresh auth files found this round (transient fetch issue, or none
-    // match our candidate list right now) — keep the last known-good context
-    // rather than wiping it to empty.
+    // Keep the last known-good context rather than wiping it on a transient miss.
     const repoSecurityContext = discoveryResult?.context ?? cached?.context ?? "";
 
     if (discoveryResult) {

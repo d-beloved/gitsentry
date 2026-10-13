@@ -1,5 +1,3 @@
-// The reaper only talks to the DB and the notifier — mock both so we can assert
-// the claim/refund branching without touching Supabase.
 jest.mock("../../db/queries", () => ({
   getStrandedScans: jest.fn(),
   claimStrandedScan: jest.fn(),
@@ -147,8 +145,7 @@ describe("reapStrandedScans", () => {
     expect(mockCheckRun).toHaveBeenCalledWith("acme/api", "abc1234def5678", 99, false);
   });
 
-  // Everything below never had a check run posted in the first place, so posting
-  // one now would invent a red required check on a PR that had none.
+  // These never had a check run, so posting one would invent a red required check.
   it("posts no check run for a non-Pro org", async () => {
     mockGetStranded.mockResolvedValue([strandedScan()]);
     mockGetOrg.mockResolvedValue(org({ plan: "free" }));
@@ -231,8 +228,7 @@ describe("reapStrandedScans", () => {
 
     await reapStrandedScans();
 
-    // A generous queue threshold is the whole defence against reaping a scan
-    // that is merely waiting its turn behind a slow backlog.
+    // A generous queue threshold avoids reaping a scan merely waiting in a backlog.
     const [queueCutoff, runCutoff] = mockGetStranded.mock.calls[0];
     expect(new Date(queueCutoff).getTime()).toBeLessThan(new Date(runCutoff).getTime());
   });

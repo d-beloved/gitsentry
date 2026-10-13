@@ -1,11 +1,5 @@
-/**
- * Pins which host knobs each kind of call carries.
- *
- * The wiring is the part worth testing: a scan that quietly sends the sweep's
- * reasoning settings — or none at all — costs latency and money on every PR and
- * shows up in no log line. The provider is faked, so nothing here makes a real
- * call; the assertions are entirely about what the request was built with.
- */
+// Pins which host knobs each kind of call carries; miswiring costs latency and
+// money silently. The provider is faked.
 import type { AIProvider, GenerateRequest } from "../../../../../packages/ai-provider";
 import type { ScanContext } from "../../../../../packages/scanner-contract/types";
 
@@ -24,13 +18,7 @@ const CONTEXT: ScanContext = {
   author: null,
 };
 
-/**
- * Reloads ai.ts under the given env with a recording provider in place.
- *
- * The role vars are read once at module load — that is the point, so a bad one
- * fails the deploy rather than a scan — so each case needs a fresh module
- * registry rather than just a different process.env.
- */
+// Role vars are read once at module load, so each case needs a fresh registry.
 async function loadAi(
   env: Record<string, string | undefined>,
   respond: (req: GenerateRequest) => string = () => '{"issues":[],"summary":"clean"}',
@@ -99,9 +87,7 @@ describe("per-role extra bodies", () => {
   });
 
   it("leaves the global setting to the provider when a role says nothing", async () => {
-    // The global lives on the provider, not on the request — a role that sets
-    // nothing must send undefined rather than an empty object that would look
-    // like a deliberate override.
+    // Undefined, not {}, which would look like a deliberate override.
     const { ai, calls } = await loadAi({ AI_EXTRA_BODY: '{"thinking":{"type":"disabled"}}' });
 
     await ai.analyzeCode(DIFF, CONTEXT, { mode: "diff_scan" });
@@ -116,9 +102,8 @@ describe("per-role extra bodies", () => {
   });
 
   it("sends the judge its own knobs on the verification pass", async () => {
-    // The judge only runs when the scan found something, so the scan has to
-    // return a finding that survives the hallucination filter — hence a path
-    // that is actually in the diff.
+    // The judge only runs on a finding that survives the hallucination filter,
+    // hence a path that is actually in the diff.
     const { ai, calls } = await loadAi(
       {
         AI_SCAN_EXTRA_BODY: '{"thinking":{"type":"disabled"}}',

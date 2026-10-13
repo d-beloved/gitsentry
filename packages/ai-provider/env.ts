@@ -1,26 +1,65 @@
-/**
- * Vendor-neutral AI env vars.
- *
- * Moved here from apps/backend so both apps and eval/run.ts read the config the
- * same way; apps/backend/src/lib/aiEnv.ts re-exports it for existing callers.
- *
- * The config used to be named after one vendor (GEMINI_API_KEY, GEMINI_SCAN_MODEL,
- * …), which made the provider look like a fixed property of the app rather than a
- * setting. Everything now reads AI_* — AI_API_KEY, AI_SCAN_MODEL, AI_SWEEP_MODEL,
- * AI_DISCOVERY_MODEL, AI_VERIFIER_MODEL, plus the provider vars in ./index.ts.
- *
- * The GEMINI_* names still work so a deploy that hasn't had its env updated keeps
- * running, but they warn once on first read and will be dropped in a later release.
- */
+// AI config lives in AI_* env vars. Each provider can also be configured side by
+// side as AI_<PROVIDER>_*; one is active at a time (admin switch, else AI_PROVIDER).
+
+export const VENDORS = ["anthropic", "gemini", "openai_compat"] as const;
+
+export type Vendor = (typeof VENDORS)[number];
+export type Transport = Vendor;
+
+export function isVendor(value: unknown): value is Vendor {
+  return typeof value === "string" && (VENDORS as readonly string[]).includes(value);
+}
+
+// Settings that must never fall back to the unprefixed name, so one provider can't send another's model id.
+function isVendorBound(suffix: string): boolean {
+  return (
+    suffix === "API_KEY" ||
+    suffix === "BASE_URL" ||
+    suffix === "STRUCTURED_MODE" ||
+    suffix === "PROVIDER_ORDER" ||
+    suffix === "ALLOW_FALLBACKS" ||
+    suffix.endsWith("_MODEL") ||
+    suffix.endsWith("EXTRA_BODY")
+  );
+}
+
+let runtimeVendor: Vendor | null = null;
+
+/** null hands the choice back to AI_PROVIDER. Callers validate with assertVendorConfig() first. */
+export function setActiveVendor(vendor: Vendor | null): void {
+  runtimeVendor = vendor;
+}
+
+/** The active provider, or null for the unprefixed AI_* config. */
+export function activeVendor(): Vendor | null {
+  if (runtimeVendor) return runtimeVendor;
+  const fromEnv = process.env.AI_PROVIDER?.trim().toLowerCase();
+  if (!fromEnv) return null;
+  if (!isVendor(fromEnv)) {
+    throw new Error(`AI_PROVIDER must be one of ${VENDORS.join(", ")} — got "${fromEnv}"`);
+  }
+  return fromEnv;
+}
+
+export function envName(vendor: Vendor | null, suffix: string): string {
+  return vendor ? `AI_${vendor.toUpperCase()}_${suffix}` : `AI_${suffix}`;
+}
+
+/** Providers with an API key set. */
+export function configuredVendors(): Vendor[] {
+  return VENDORS.filter((v) => !!process.env[envName(v, "API_KEY")]);
+}
 
 const warned = new Set<string>();
 
-/**
- * Reads `AI_<suffix>`, falling back to the deprecated `GEMINI_<suffix>`.
- *
- * @param suffix env var name without the vendor prefix, e.g. "SCAN_MODEL"
- */
-export function aiEnv(suffix: string): string | undefined {
+/** AI_<PROVIDER>_<suffix>, then (unless vendor-bound) AI_<suffix>, then the deprecated GEMINI_<suffix>. */
+export function envFor(vendor: Vendor | null, suffix: string): string | undefined {
+  if (vendor) {
+    const scoped = process.env[envName(vendor, suffix)];
+    if (scoped) return scoped;
+    if (isVendorBound(suffix)) return undefined;
+  }
+
   const current = process.env[`AI_${suffix}`];
   if (current) return current;
 
@@ -35,9 +74,16 @@ export function aiEnv(suffix: string): string | undefined {
   return legacy;
 }
 
-/** Same as aiEnv(), but throws when neither name is set. */
-export function requireAiEnv(suffix: string): string {
-  const value = aiEnv(suffix);
-  if (!value) throw new Error(`AI_${suffix} is not set`);
+export function requireEnvFor(vendor: Vendor | null, suffix: string): string {
+  const value = envFor(vendor, suffix);
+  if (!value) throw new Error(`${envName(vendor, suffix)} is not set`);
   return value;
+}
+
+export function aiEnv(suffix: string): string | undefined {
+  return envFor(activeVendor(), suffix);
+}
+
+export function requireAiEnv(suffix: string): string {
+  return requireEnvFor(activeVendor(), suffix);
 }

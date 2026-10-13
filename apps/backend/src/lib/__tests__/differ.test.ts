@@ -150,8 +150,6 @@ describe("truncateDiff", () => {
   });
 });
 
-// ─── extractScannerInput ─────────────────────────────────────────────────────
-
 import { extractScannerInput, extractWithContext } from "../differ";
 
 const DELETION_DIFF = `\

@@ -1,36 +1,22 @@
-/**
- * Context-aware security scanning rules.
- *
- * HOW TO ADD A RULE
- * -----------------
- * Found a false positive?
- *   1. Identify the project type that triggers it.
- *   2. Add the category to skip_categories (never flag) or deprioritize_categories (flag only with strong evidence).
- *   3. Extend extra_instructions with a sentence explaining the constraint.
- *   4. Do NOT patch the AI prompt directly.
- *
- * Found a new project type signal?
- *   1. Add its path prefix to TEST_PATH_PREFIXES or a new entry in PROJECT_TYPE_RULES.
- */
+// Fix false positives by editing these per-project-type rules, not the scan prompt.
 
 export type ProjectType =
-  | "library"          // npm package, gem, pip/pypi, composer, crate, etc.
-  | "framework_plugin" // Rails engine, Express middleware, WP plugin, etc.
-  | "cli_tool"         // Command-line tools run locally or in CI
-  | "api_service"      // Backend API / microservice the author deploys
-  | "frontend_app"     // Client-side only (React, Vue, Svelte, etc.)
-  | "standalone_app"   // Full-stack app the author deploys (Rails, Django, Laravel, Next.js)
-  | "monorepo"         // Multiple packages/apps in one repo
-  | "unknown";         // Could not determine — full rules apply conservatively
+  | "library"
+  | "framework_plugin"
+  | "cli_tool"
+  | "api_service"
+  | "frontend_app"
+  | "standalone_app"
+  | "monorepo"
+  | "unknown";         // Full rules apply conservatively
 
 export type DeploymentContext =
-  | "deployed_by_author"  // Author runs/operates it — full security responsibility
-  | "consumed_by_others"; // Others install, import, or mount it — consumer owns some surface
+  | "deployed_by_author"
+  | "consumed_by_others"; // Consumer owns some of the security surface
 
 export interface ProjectClassification {
   project_type: ProjectType;
   deployment_context: DeploymentContext;
-  /** Path prefixes identifying test scaffolding to exclude from scanning. */
   test_paths: string[];
   confidence: "high" | "low";
   reasoning: string;
@@ -38,15 +24,11 @@ export interface ProjectClassification {
 
 export interface ProjectTypeRules {
   description: string;
-  /** Categories to never flag for this project type. */
   skip_categories: string[];
-  /** Categories to flag only with very clear, concrete evidence. */
+  /** Flagged only with very clear, concrete evidence. */
   deprioritize_categories: string[];
-  /** Extra instructions injected into the AI prompt for this project type. */
   extra_instructions: string;
 }
-
-// ─── Per-project-type rules ───────────────────────────────────────────────────
 
 export const PROJECT_TYPE_RULES: Record<ProjectType, ProjectTypeRules> = {
   library: {
@@ -167,10 +149,7 @@ export const PROJECT_TYPE_RULES: Record<ProjectType, ProjectTypeRules> = {
   },
 };
 
-// ─── Test scaffolding path prefixes ──────────────────────────────────────────
-// Findings in files under these prefixes are excluded from results.
-// Add a new entry here when a false positive originates from test scaffolding.
-
+// Findings under these prefixes are excluded from results.
 export const TEST_PATH_PREFIXES: string[] = [
   "spec/dummy/",
   "spec/fixtures/",
@@ -187,8 +166,6 @@ export const TEST_PATH_PREFIXES: string[] = [
   "playwright/fixtures/",
   ".storybook/",
 ];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 export function isTestScaffolding(filePath: string): boolean {
   const lower = filePath.toLowerCase();

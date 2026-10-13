@@ -1,7 +1,4 @@
-// ai.ts requires these at module load time (fail-fast in production if the AI
-// provider isn't configured). Tests that import from ai.ts — directly or
-// transitively via verifier.ts — need dummy values so the module can load;
-// no test in this suite makes a real AI call.
+// ai.ts requires these at module load; dummy values let it load in tests.
 process.env.AI_API_KEY ??= "test-key";
 process.env.AI_SCAN_MODEL ??= "test-scan-model";
 process.env.AI_SWEEP_MODEL ??= "test-sweep-model";

@@ -12,8 +12,7 @@ const router = express.Router();
 
 function verifySignature(req: Request): boolean {
   const secret = process.env.GITHUB_WEBHOOK_SECRET;
-  // Reject immediately if secret is unset — avoids HMAC being computed over
-  // the string "undefined", which an attacker could trivially replicate.
+  // Unset secret would HMAC over "undefined", which an attacker can replicate.
   if (!secret) {
     console.error("[webhook] GITHUB_WEBHOOK_SECRET is not configured — rejecting request");
     return false;

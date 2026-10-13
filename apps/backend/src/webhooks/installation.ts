@@ -92,8 +92,7 @@ export async function handleInstallation(
       if (repoRows?.length) {
         const repoIds = (repoRows as Array<{ id: string }>).map((r) => r.id);
 
-        // Archive anonymized findings to training corpus before deletion.
-        // We strip all identifying info and keep only the vulnerability signal.
+        // Archive findings stripped of identifying info before deletion.
         const { data: findings } = await supabase
           .from("findings")
           .select(

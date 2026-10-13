@@ -4,16 +4,8 @@ import { processScanJob } from "./workers/scanWorker";
 
 let scanQueue: Bull.Queue<ScanJobData> | null = null;
 
-/**
- * How many scans the worker runs at once. One by default, deliberately: the
- * scan's cost is a single long AI call, and running several of those in
- * parallel against one provider account is what produced the timeouts this
- * queue was tuned around. The knob exists so that can be measured on a real
- * deployment — raise SCAN_WORKER_CONCURRENCY, watch the AI timeout rate and
- * p95 scan duration, and roll it back with a config change rather than a
- * release. Raising it also shortens queue waits, which is what
- * SCAN_QUEUE_TIMEOUT_MINUTES in the reaper is sized against.
- */
+// Defaults to 1: parallel long AI calls on one provider account cause timeouts.
+// The reaper's SCAN_QUEUE_TIMEOUT_MINUTES is sized against the resulting queue wait.
 function workerConcurrency(): number {
   const raw = process.env.SCAN_WORKER_CONCURRENCY;
   if (!raw) return 1;
@@ -31,9 +23,7 @@ function workerConcurrency(): number {
 if (process.env.REDIS_URL) {
   try {
     const isTLS = process.env.REDIS_URL.startsWith("rediss://");
-    // TLS certificates are verified by default. Some legacy managed Redis
-    // providers (e.g. old Heroku Redis plans) serve self-signed certs; opt
-    // out explicitly with REDIS_TLS_REJECT_UNAUTHORIZED=false — never by default.
+    // Verify TLS by default; self-signed managed Redis must opt out explicitly.
     const rejectUnauthorized = process.env.REDIS_TLS_REJECT_UNAUTHORIZED !== "false";
     scanQueue = new Bull<ScanJobData>("scan", process.env.REDIS_URL, {
       redis: {
@@ -57,7 +47,7 @@ if (process.env.REDIS_URL) {
       ),
     );
 
-    // Wire the worker after the module is fully loaded to avoid circular requires
+    // Deferred to avoid a circular require with the worker.
     setImmediate(() => {
       import("./workers/scanWorker").then(({ default: processor }) => {
         scanQueue!.process(workerConcurrency(), processor);
@@ -75,11 +65,7 @@ if (process.env.REDIS_URL) {
 
 export { scanQueue };
 
-/**
- * Fire-and-forget scan dispatch. Tries Bull with a 5s timeout; falls back to
- * inline processScanJob if Bull is unreachable or the add times out. Never
- * blocks the caller — safe to call without await.
- */
+/** Fire-and-forget; falls back to an inline scan if Bull is unreachable or the add times out. */
 export function dispatchScan(jobData: ScanJobData, label: string): void {
   if (scanQueue) {
     Promise.race([

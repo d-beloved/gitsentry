@@ -1,12 +1,5 @@
-/**
- * Admin-triggered scanner eval.
- *
- * The sweep lives here rather than in the web app for two reasons: the fixtures
- * and analyzeCode are in this repo, and twelve sequential scans take minutes —
- * comfortably past a serverless function's ceiling. /admin/eval POSTs here with
- * the internal key, gets a run id back immediately, and reads progress from
- * Supabase while the sweep continues in this process.
- */
+// Admin-triggered scanner eval. Runs here, not in the web app, because a full
+// sweep takes minutes — past a serverless function's ceiling.
 import express, {Request, Response, NextFunction} from "express";
 import {runEval, loadFixtures} from "../../../../eval/harness";
 import {
@@ -30,7 +23,7 @@ function verifyInternalKey(
   next: NextFunction,
 ): void {
   const key = process.env.INTERNAL_API_KEY;
-  // If the key is not configured the endpoint must be closed
+  // Fail closed when the key is not configured.
   if (!key) {
     console.error(
       "[eval] INTERNAL_API_KEY is not configured — rejecting request",
@@ -46,8 +39,7 @@ function verifyInternalKey(
   next();
 }
 
-/** Snapshot of the config a run executed under. Stored on the run because env
- *  changes and a score means nothing without the setup that produced it. */
+/** Config the run executed under; a score means nothing without its setup. */
 function currentConfig() {
   const provider = getProvider();
   return {
@@ -76,8 +68,7 @@ router.post(
     try {
       fixturesTotal = loadFixtures().length;
     } catch (err) {
-      // Missing fixtures is a deployment problem, not a run failure — say so
-      // before creating a run row that would just sit there failed.
+      // Missing fixtures is a deployment problem; don't create a run row for it.
       res.status(500).json({error: (err as Error).message});
       return;
     }
@@ -95,17 +86,14 @@ router.post(
       return;
     }
 
-    // Respond before the sweep starts. The caller polls Supabase for progress;
-    // holding the connection open for three minutes buys nothing and loses the
-    // run id if the proxy times out first.
+    // Respond before the sweep starts so a proxy timeout can't lose the run id.
     res.status(202).json({runId, fixturesTotal, ...config});
 
     void runSweep(runId);
   },
 );
 
-/** Fire-and-forget sweep. Every throw is caught and recorded — an unhandled
- *  rejection here would take down the worker mid-scan for real customers. */
+// Every throw must be caught: an unhandled rejection would kill the worker mid-scan.
 async function runSweep(runId: string): Promise<void> {
   console.log(`[eval] run ${runId} started`);
   try {

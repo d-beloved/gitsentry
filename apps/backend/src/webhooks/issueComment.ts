@@ -19,14 +19,13 @@ export async function handleIssueComment(
   const repo = payload.repository as Record<string, unknown>;
   const installation = payload.installation as Record<string, unknown> | undefined;
 
-  // Only handle PR comments — plain issues have no pull_request field
+  // Plain issues have no pull_request field.
   if (!issue.pull_request) return;
 
   const body = (comment.body as string | undefined)?.trim() ?? "";
   const normalizedBody = body.toLowerCase();
   if (normalizedBody !== "/gitsentry rescan" && normalizedBody !== "/gitsentry scan") return;
 
-  // Only allow collaborators / owners / org members to trigger rescans
   const association = comment.author_association as string;
   if (!["OWNER", "MEMBER", "COLLABORATOR"].includes(association)) return;
 
@@ -39,7 +38,6 @@ export async function handleIssueComment(
   const octokit = await getInstallationOctokit(installationId);
   const [owner, repoName] = repoFullName.split("/");
 
-  // Fetch PR to get current HEAD sha + metadata
   const {data: pr} = await octokit.request(
     "GET /repos/{owner}/{repo}/pulls/{pull_number}",
     {owner, repo: repoName, pull_number: prNumber},
@@ -50,11 +48,9 @@ export async function handleIssueComment(
   const prAuthor = pr.user?.login ?? null;
   const isPrivate = (repo.private as boolean) ?? false;
 
-  // getOrgByInstallationId now returns OrgWithUsage including subscription_status
   const org = await getOrgByInstallationId(installationId);
   const plan = org?.plan ?? "free";
 
-  // Quota check — all plans including Pro (capped at 500/month)
   const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
   const claimed = org
     ? await tryClaimScan(
@@ -86,15 +82,12 @@ export async function handleIssueComment(
     return;
   }
 
-  // Post acknowledgment immediately so the user knows something is happening.
   const currentCalMonth = new Date().toISOString().slice(0, 7);
   const scansUsed =
     plan === "free"
       ? (org?.scan_month === currentCalMonth ? (org?.scan_count_month ?? 0) : 0)
       : (org?.scan_count_month ?? 0);
-  // scansUsed is the pre-claim count from the org snapshot fetched before
-  // tryClaimScan incremented it. "remaining" = slots available before this scan
-  // so "This scan uses 1 of your X remaining" reads correctly.
+  // Pre-claim snapshot, so "remaining" counts this scan as not yet used.
   const remaining = Math.max(0, scanLimit - scansUsed);
 
   const quotaLine = `_This scan uses 1 of your ${remaining} remaining scans this month._`;

@@ -1,23 +1,13 @@
-/**
- * Tests for the provider seam.
- *
- * These cover the failures that would otherwise be silent in production: a
- * schema that a strict validator rejects, cached tokens quietly counted as
- * zero (which understates cache hit rate and overstates cost), a routing block
- * sent to a host that 400s on it, and a structured mode that degrades without
- * saying so. None of these throw on their own — they just produce wrong numbers
- * or wrong output, which is why they are pinned here.
- */
+// Pins provider-seam failures that would otherwise be silent: wrong token counts,
+// rejected schemas, unwanted routing blocks, quietly degraded structured modes.
 import { toStrictSchema, describeSchema } from "../../../../../packages/ai-provider/schema";
 import { OpenAICompatProvider } from "../../../../../packages/ai-provider/openaiCompat";
 import { createProvider } from "../../../../../packages/ai-provider";
 import type { JsonSchema } from "../../../../../packages/ai-provider/types";
 
-/** A host serving its own model, and an aggregator routing between several. */
 const HOST = "https://host.example/v1";
 const AGGREGATOR = "https://aggregator.example/api/v1";
 
-/** Captures the outgoing request so assertions can read the body it built. */
 function mockFetch(payload: Record<string, unknown>) {
   const calls: { url: string; body: Record<string, unknown> }[] = [];
   global.fetch = jest.fn(async (url: string, init: { body: string }) => {
@@ -29,8 +19,7 @@ function mockFetch(payload: Record<string, unknown>) {
 
 describe("toStrictSchema", () => {
   it("converts nullable fields to a null union rather than dropping them", () => {
-    // The strict dialect requires every property in `required`, so optionality
-    // has to survive as anyOf — dropping it would silently forbid null.
+    // Strict mode requires every property, so optionality must survive as anyOf.
     const out = toStrictSchema({
       type: "object",
       properties: { line_number: { type: "integer", nullable: true } },
@@ -131,9 +120,7 @@ describe("OpenAICompatProvider — structured output", () => {
   const schema: JsonSchema = { type: "object", properties: { a: { type: "string" } } };
 
   it("defaults to json_object, the only mode every host implements", async () => {
-    // Guessing high fails every scan on a host that does not enforce schemas;
-    // guessing low costs a described-in-prompt schema. AI_STRUCTURED_MODE raises
-    // it once the eval confirms the endpoint honours the stronger mode.
+    // A stronger default would fail every scan on hosts that don't enforce schemas.
     const calls = mockFetch({ choices: [{ message: { content: "{}" } }] });
     await new OpenAICompatProvider({ apiKey: "k", baseURL: HOST }).generate({
       model: "m",
@@ -172,13 +159,10 @@ describe("OpenAICompatProvider — structured output", () => {
       type: "function",
       function: { name: "analysis" },
     });
-    // The payload lives in function.arguments, not content.
     expect(res.text).toBe('{"a":"x"}');
   });
 
   it("posts to the configured base URL verbatim, whatever the mode", async () => {
-    // Hosts that serve strict tool calling from a separate path are configured
-    // that way in AI_BASE_URL — nothing here rewrites the operator's URL.
     const calls = mockFetch({ choices: [{ message: { content: "{}" } }] });
     await new OpenAICompatProvider({
       apiKey: "k",
@@ -189,8 +173,7 @@ describe("OpenAICompatProvider — structured output", () => {
   });
 
   it("puts the schema description in the cached prefix in json_object mode", async () => {
-    // Appending it to the variable tail would push a large constant past the
-    // cache breakpoint on every single call.
+    // In the variable tail it would sit past the cache breakpoint on every call.
     const calls = mockFetch({ choices: [{ message: { content: "{}" } }] });
     await new OpenAICompatProvider({ apiKey: "k", baseURL: HOST }).generate({
       model: "m",
@@ -268,8 +251,6 @@ describe("OpenAICompatProvider — extra body", () => {
     const provider = new OpenAICompatProvider({
       apiKey: "k",
       baseURL: HOST,
-      // The knob that matters in practice: hybrid models think by default, and
-      // a scan that reasons for minutes blows its wall-clock budget.
       extraBody: { thinking: { type: "disabled" }, reasoning_effort: "low" },
     });
 
@@ -287,9 +268,7 @@ describe("OpenAICompatProvider — extra body", () => {
       extraBody: { thinking: { type: "disabled" }, safety: "strict" },
     });
 
-    // A role overrides only what it names — the global's other fields survive,
-    // which is what lets AI_EXTRA_BODY act as a default rather than an
-    // all-or-nothing switch.
+    // A role overrides only the keys it names; the global's other fields survive.
     await provider.generate({
       model: "m",
       prompt: "p",
@@ -335,8 +314,7 @@ describe("createProvider — AI_EXTRA_BODY", () => {
     expect(calls[0].body.thinking).toEqual({ type: "disabled" });
   });
 
-  // Each of these would otherwise fail open: the setting silently does nothing,
-  // and the only symptom is a slow, expensive scan that still returns findings.
+  // Otherwise these fail open: the setting silently does nothing.
   it.each([
     ["malformed JSON", "{thinking: disabled}", /not valid JSON/],
     ["a non-object", '"disabled"', /must be a JSON object/],
@@ -347,8 +325,7 @@ describe("createProvider — AI_EXTRA_BODY", () => {
   });
 
   it("names shell quote-stripping when the value lost its quotes", () => {
-    // What you actually get from `export AI_EXTRA_BODY={"thinking":"x"}` in any
-    // POSIX shell — the quotes are removed before the process ever sees them.
+    // What a POSIX shell yields for an unquoted `export AI_EXTRA_BODY={"thinking":"x"}`.
     process.env.AI_EXTRA_BODY = "{thinking:{type:disabled}}";
     expect(() => createProvider()).toThrow(/single quotes/);
   });

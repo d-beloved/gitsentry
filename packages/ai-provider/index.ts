@@ -1,79 +1,92 @@
 import type { AIProvider } from "./types";
 import { GeminiProvider } from "./gemini";
 import { OpenAICompatProvider, type StructuredMode } from "./openaiCompat";
-import { aiEnv, requireAiEnv } from "./env";
+import { AnthropicProvider } from "./anthropic";
+import {
+  activeVendor,
+  envFor,
+  envName,
+  requireEnvFor,
+  type Transport,
+  type Vendor,
+} from "./env";
 
 export type { AIProvider, GenerateRequest, GenerateResponse, JsonSchema } from "./types";
 export type { StructuredMode } from "./openaiCompat";
 export { GeminiProvider } from "./gemini";
 export { OpenAICompatProvider } from "./openaiCompat";
 export { toStrictSchema, describeSchema } from "./schema";
-export { aiEnv, requireAiEnv } from "./env";
+export { AnthropicProvider } from "./anthropic";
+export {
+  aiEnv,
+  requireAiEnv,
+  envFor,
+  requireEnvFor,
+  envName,
+  VENDORS,
+  isVendor,
+  activeVendor,
+  setActiveVendor,
+  configuredVendors,
+  type Vendor,
+} from "./env";
 
 /**
- * Builds the provider from env.
- *
- *   AI_API_KEY          — required, whichever vendor is in use
- *   AI_BASE_URL         — set it and you get the OpenAI-compatible provider;
- *                         leave it unset and you get Gemini. This single var is
- *                         the whole vendor switch.
- *   AI_STRUCTURED_MODE  — json_schema | tool_strict | json_object. Defaults to
- *                         json_object, the only mode every host implements; see
- *                         openaiCompat.ts for when to raise it.
- *   AI_PROVIDER_ORDER   — comma-separated endpoint slugs, preferred first. Only
- *                         meaningful on aggregators that route between hosts;
- *                         leave unset for an endpoint that serves its own model.
- *   AI_ALLOW_FALLBACKS  — "off" to fail rather than route outside the pin.
- *   AI_EXTRA_BODY       — JSON object merged into every request body, for host
- *                         knobs this code does not model. The main use is
- *                         reasoning: hybrid models think by default, which is
- *                         the difference between a scan that answers in seconds
- *                         and one that spends minutes before its first token.
- *                         Consult the host's docs for the spelling.
- *   AI_<ROLE>_EXTRA_BODY — same, for one kind of call, merged over the global
- *                         one. See extraBodyFor().
- *
- * Pointing at a single-model endpoint:
- *   AI_BASE_URL=https://host.example/v1
- *   AI_SCAN_MODEL=<model id that host publishes>
- *
- * Pointing at an aggregator, pinned to named endpoints:
- *   AI_BASE_URL=https://aggregator.example/api/v1
- *   AI_SCAN_MODEL=<vendor>/<model>
- *   AI_PROVIDER_ORDER=<slug>,<slug>
+ * Builds the provider for a vendor from env. Unprefixed config: AI_BASE_URL set means
+ * OpenAI-compatible, unset means Gemini. Named vendors use their own transport.
  */
-export function createProvider(): AIProvider {
-  const apiKey = requireAiEnv("API_KEY");
-  const baseURL = aiEnv("BASE_URL");
+export function createProvider(vendor: Vendor | null = activeVendor()): AIProvider {
+  const apiKey = requireEnvFor(vendor, "API_KEY");
+  const extraBody = parseExtraBody(envFor(vendor, "EXTRA_BODY"), envName(vendor, "EXTRA_BODY"));
 
-  if (!baseURL) return new GeminiProvider(apiKey);
-
-  const mode = aiEnv("STRUCTURED_MODE") as StructuredMode | undefined;
-  if (mode && !["json_schema", "tool_strict", "json_object"].includes(mode)) {
-    throw new Error(
-      `AI_STRUCTURED_MODE must be json_schema, tool_strict, or json_object — got "${mode}"`,
-    );
+  const transport = transportFor(vendor);
+  if (transport === "anthropic") {
+    return new AnthropicProvider({ apiKey, extraBody, baseURL: envFor(vendor, "BASE_URL") });
   }
+  if (transport === "gemini") return new GeminiProvider(apiKey);
 
   return new OpenAICompatProvider({
     apiKey,
-    baseURL,
-    structuredMode: mode,
-    extraBody: parseExtraBody(aiEnv("EXTRA_BODY")),
-    providerOrder: (aiEnv("PROVIDER_ORDER") ?? "")
+    baseURL: requireEnvFor(vendor, "BASE_URL"),
+    structuredMode: structuredModeFor(vendor),
+    extraBody,
+    providerOrder: (envFor(vendor, "PROVIDER_ORDER") ?? "")
       .split(",")
       .map((slug) => slug.trim())
       .filter(Boolean),
-    allowFallbacks: process.env.AI_ALLOW_FALLBACKS !== "off",
+    allowFallbacks: envFor(vendor, "ALLOW_FALLBACKS") !== "off",
   });
 }
 
-/**
- * Fields createProvider() computes from other env vars, so an extra body that
- * also set them would be a second source of truth that loses. Rejected by name
- * rather than merged and overwritten, because the whole reason to reach for
- * AI_EXTRA_BODY is that you cannot see the request being built.
- */
+function transportFor(vendor: Vendor | null): Transport {
+  if (vendor) return vendor;
+  return envFor(null, "BASE_URL") ? "openai_compat" : "gemini";
+}
+
+function structuredModeFor(vendor: Vendor | null): StructuredMode | undefined {
+  const mode = envFor(vendor, "STRUCTURED_MODE") as StructuredMode | undefined;
+  if (mode && !["json_schema", "tool_strict", "json_object"].includes(mode)) {
+    throw new Error(
+      `${envName(vendor, "STRUCTURED_MODE")} must be json_schema, tool_strict, or json_object — got "${mode}"`,
+    );
+  }
+  return mode;
+}
+
+/** Validates a vendor's config without a call; run at boot and before a runtime switch. */
+export function assertVendorConfig(
+  vendor: Vendor | null,
+  { models = [], roles = [] }: { models?: string[]; roles?: string[] } = {},
+): void {
+  requireEnvFor(vendor, "API_KEY");
+  if (transportFor(vendor) === "openai_compat") requireEnvFor(vendor, "BASE_URL");
+  structuredModeFor(vendor);
+  for (const suffix of models) requireEnvFor(vendor, suffix);
+  parseExtraBody(envFor(vendor, "EXTRA_BODY"), envName(vendor, "EXTRA_BODY"));
+  for (const role of roles) extraBodyFor(role, vendor);
+}
+
+// Fields the provider sets itself; an extra body may not override them.
 const RESERVED_BODY_KEYS: Record<string, string> = {
   model: "AI_SCAN_MODEL / AI_SWEEP_MODEL / AI_DISCOVERY_MODEL",
   messages: "the prompt itself",
@@ -81,20 +94,12 @@ const RESERVED_BODY_KEYS: Record<string, string> = {
   tools: "AI_STRUCTURED_MODE",
   tool_choice: "AI_STRUCTURED_MODE",
   provider: "AI_PROVIDER_ORDER / AI_ALLOW_FALLBACKS",
+  system: "the prompt itself",
+  stream: "the provider, which always streams or never does",
+  betas: "the provider",
 };
 
-/**
- * Parses an extra-body env var, throwing on anything it cannot honour exactly.
- *
- * Every failure mode here is otherwise invisible: a stray quote that drops a
- * "thinking: disabled" still returns findings, just slowly and at several times
- * the token cost, with nothing in the logs to say the setting never applied.
- * Boot is the only place that mistake is cheap to notice — which is why callers
- * resolve these at module load rather than per call.
- *
- * @param raw  the env value
- * @param varName  which var it came from, so the error says what to go fix
- */
+/** Parses an extra-body env var, throwing on anything it can't apply exactly. */
 export function parseExtraBody(
   raw: string | undefined,
   varName = "AI_EXTRA_BODY",
@@ -105,10 +110,7 @@ export function parseExtraBody(
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    // Far and away the most common way this breaks: the value was set through a
-    // shell, which strips the double quotes JSON requires — `{"a":1}` arrives as
-    // `{a:1}`. Worth naming, because the message you get otherwise ("Expected
-    // property name") reads like the JSON was written wrong rather than eaten.
+    // A shell strips the quotes JSON needs, so `{"a":1}` arrives as `{a:1}`.
     const looksUnquoted = raw.includes("{") && !raw.includes('"');
     throw new Error(
       `${varName} is not valid JSON: ${(err as Error).message}` +
@@ -133,40 +135,31 @@ export function parseExtraBody(
   return parsed as Record<string, unknown>;
 }
 
-/**
- * Per-role host knobs, read from `AI_<ROLE>_EXTRA_BODY`.
- *
- * The roles are the ones the model and timeout vars already name — SCAN, SWEEP,
- * DISCOVERY, VERIFY — because they are the axis along which these calls
- * genuinely differ. Reasoning is the setting that makes that concrete: the
- * sweep is an adversarial read of a whole repo and wants every bit of it, while
- * discovery is a bounded JSON answer where thinking is pure latency and cost.
- * A single process-wide value has to be wrong for one of them.
- *
- * Returns only this role's fields; the global AI_EXTRA_BODY is already baked
- * into the provider and these merge over it, so a role names just what it
- * changes rather than restating the default.
- */
-export function extraBodyFor(role: string): Record<string, unknown> | undefined {
-  const varName = `AI_${role}_EXTRA_BODY`;
-  return parseExtraBody(aiEnv(`${role}_EXTRA_BODY`), varName);
+/** AI_<ROLE>_EXTRA_BODY, merged over the global AI_EXTRA_BODY by the provider. */
+export function extraBodyFor(
+  role: string,
+  vendor: Vendor | null = activeVendor(),
+): Record<string, unknown> | undefined {
+  const suffix = `${role}_EXTRA_BODY`;
+  return parseExtraBody(envFor(vendor, suffix), envName(vendor, suffix));
 }
 
-/**
- * Process-wide provider.
- *
- * Lazy because construction reads env, and importing this module must not throw
- * in tests that never make a call. eval/run.ts overrides it per run to compare
- * two vendors against the same prompts.
- */
-let cached: AIProvider | undefined;
+// Built lazily so importing never throws; one instance per vendor.
+const cache = new Map<Vendor | null, AIProvider>();
+let override: AIProvider | undefined;
 
-export function getProvider(): AIProvider {
-  if (!cached) cached = createProvider();
-  return cached;
+export function getProvider(vendor: Vendor | null = activeVendor()): AIProvider {
+  if (override) return override;
+  let provider = cache.get(vendor);
+  if (!provider) {
+    provider = createProvider(vendor);
+    cache.set(vendor, provider);
+  }
+  return provider;
 }
 
-/** Swaps the provider — for eval runs and tests. Pass undefined to reset. */
+/** Pins one provider regardless of vendor, for eval and tests. undefined restores env-built ones. */
 export function setProvider(provider: AIProvider | undefined): void {
-  cached = provider;
+  override = provider;
+  cache.clear();
 }

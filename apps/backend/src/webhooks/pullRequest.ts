@@ -4,37 +4,20 @@ import { parseDiffStats, truncateDiff, hasScannableContent } from "../lib/differ
 import { isDependencyBot, isReleaseAutomationPR } from "../lib/botDetection";
 import { dispatchScan } from "../lib/queue";
 
-// Starter plan: skip re-scan on synchronize if the last scan was clean and the
-// incremental diff is below this line threshold (covers minor fixup commits).
+// Starter: skip a synchronize re-scan below this many added lines if the last scan was clean.
 const STARTER_CLEAN_RESCAN_THRESHOLD = 25;
 
-// Subscription states that mean a paid plan has lapsed. Paddle downgrades plan
-// to "free" on lapse, so an org whose plan is "free" *and* whose status is one
-// of these was a paying customer whose access to private-repo scans just ended.
+// Paddle sets plan:"free" on lapse; status tells a lapsed payer from a free org.
 const LAPSED_SUBSCRIPTION_STATUSES = new Set(["canceled", "past_due", "payment_failed"]);
 
-/**
- * Resolve the required check for a PR this webhook is about to walk away from.
- *
- * Most of the early returns below never create a scan row at all, so nothing
- * downstream will ever report on the commit — and on a repo where our check is
- * required, that leaves the PR on "Expected — waiting for status to be
- * reported" permanently. A dependency-bot PR is the sharpest case: we skip
- * those on every plan, which made every Dependabot PR on a Pro repo unmergeable.
- *
- * hasRequiredCheck is the gate rather than a plain plan check, so we resolve a
- * check that exists instead of inventing one on a repo that never had it.
- */
+// Early returns create no scan row, so resolve any required check here or the
+// PR waits forever. Gated on hasRequiredCheck so we never invent a check.
 function releaseCheck(
   repoFullName: string,
   headSha: string,
   installationId: number,
   reason: SkippedScanReason,
-  /**
-   * The org, when this call site already loaded it. `undefined` means "not
-   * fetched" — see `needsOrg`, which skips the read on the common path — and is
-   * not the same as `null`, which means "no org record exists".
-   */
+  /** `undefined` = not fetched yet; `null` = no org record exists. */
   org: Awaited<ReturnType<typeof getOrgByInstallationId>> | undefined,
 ): void {
   void (async () => {
@@ -68,7 +51,6 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
   const prLogin = prUser.login as string | undefined;
   const isBot = (prUser.type as string | undefined)?.toLowerCase() === "bot";
 
-  // Only fetch org when a plan check is actually needed.
   const needsOrg = !!(repo.private) || action === "synchronize" || isBot;
 
   const [org, alreadyScanned] = await Promise.all([
@@ -81,12 +63,7 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     return;
   }
 
-  // These two run *after* the duplicate-delivery guard, not before it: they now
-  // post a check run, and a redelivered webhook would otherwise put a second
-  // identical check on the same commit. The guard costs one indexed lookup that
-  // the org fetch is already waiting on.
-
-  // Dependency-update bots are skipped on all plans (no code to scan).
+  // Bot skips run after the duplicate guard so a redelivery doesn't post a second check.
   if (isDependencyBot(prLogin)) {
     console.log(
       `[PR] Skipping dependency bot PR ${repo.full_name}#${pr.number} (author: ${prLogin})`,
@@ -95,11 +72,6 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     return;
   }
 
-  // Release automation PRs (release-please, changesets, semantic-release) only
-  // bump versions and update changelogs — skip on all plans. Detected by author
-  // login, head branch, AND bot-authored release titles: when these tools run as
-  // a GitHub Actions workflow, the PR author is "github-actions[bot]", so the
-  // login check alone misses them.
   if (
     isReleaseAutomationPR({
       login: prLogin,
@@ -117,11 +89,8 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
 
 
   if (repo.private && (!org || org.plan === "free")) {
-    // A downgraded org (was paying, subscription lapsed) still expects its
-    // private repos to be scanned. Instead of silently dropping the scan —
-    // which made the dashboard look "clean" when nothing ran — record an
-    // explicit skipped scan so the dashboard tells the truth, and (once, on
-    // open/reopen) explain on the PR why scanning is paused.
+    // Lapsed orgs get an explicit skipped scan so nothing reads as clean, plus
+    // a PR comment on open/reopen.
     const lapsed = !!(org?.subscription_status && LAPSED_SUBSCRIPTION_STATUSES.has(org.subscription_status));
     if (lapsed) {
       let skippedScanId: string | null = null;
@@ -215,7 +184,6 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
       diff = await getDiff(repo.full_name as string, pr.number as number, installationId);
     }
 
-    // Starter only: skip when the incremental delta is tiny and the last scan was clean.
     if (org?.plan === "starter") {
       const {linesAdded} = parseDiffStats(diff);
       if (linesAdded < STARTER_CLEAN_RESCAN_THRESHOLD) {
@@ -255,8 +223,7 @@ export async function handlePR(payload: Record<string, unknown>): Promise<void> 
     return;
   }
 
-  // Skip lockfile/generated-only diffs — there is nothing scannable left after
-  // stripping them, and an empty scanner input invites hallucinated findings.
+  // Empty scanner input invites hallucinated findings.
   if (!hasScannableContent(diff)) {
     console.log(
       `[PR] Skipping ${repo.full_name}#${pr.number} — no scannable code (dependency/generated-only diff)`,

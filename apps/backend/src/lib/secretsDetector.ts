@@ -1,15 +1,8 @@
 import parseDiff from "parse-diff";
 import type { Finding } from "../../../../packages/scanner-contract/types";
 
-/**
- * Deterministic secrets detection layered under the LLM scan.
- *
- * Well-known credential formats (AWS keys, GitHub tokens, Stripe live keys,
- * private key blocks…) are exactly what pattern matching does perfectly:
- * free, instant, and it never hallucinates. The LLM still catches secrets
- * these rules can't (novel formats, split strings); when both flag the same
- * line the deterministic finding wins — it is verified, not inferred.
- */
+// Deterministic secrets detection layered under the model scan; on overlap the
+// pattern-verified finding wins over the inferred one.
 
 interface SecretRule {
   id: string;
@@ -18,8 +11,7 @@ interface SecretRule {
   severity: "critical" | "high";
 }
 
-// Vendor-specific token formats. Anchored to distinctive prefixes so false
-// positives are near-impossible; all are reported at high confidence.
+// Anchored to distinctive prefixes so false positives are near-impossible.
 const SECRET_RULES: SecretRule[] = [
   {
     id: "aws-access-key-id",
@@ -89,8 +81,7 @@ const SECRET_RULES: SecretRule[] = [
   },
 ];
 
-// Generic "secret-ish assignment" — requires both a suspicious variable name
-// and a high-entropy literal value, plus the placeholder filters below.
+// Also requires a high-entropy value and passing the placeholder filters.
 const GENERIC_ASSIGNMENT =
   /(?:password|passwd|pwd|secret|api[_-]?key|apikey|auth[_-]?token|access[_-]?token|private[_-]?key|client[_-]?secret)["']?\s*[:=]\s*["']([^"']{12,})["']/i;
 
@@ -158,7 +149,7 @@ const SKIP_FILE_PATTERNS = [
 
 export interface DetectedSecret {
   finding: Finding;
-  /** file path + line — used to dedupe overlapping LLM findings */
+  /** Used with lineNumber to dedupe overlapping model findings. */
   filePath: string;
   lineNumber: number;
 }
@@ -244,11 +235,7 @@ function buildDetection(
   };
 }
 
-/**
- * Merges deterministic secret detections with AI findings. When the AI also
- * flagged a hardcoded secret on (or near) the same line, the deterministic
- * finding replaces it — pattern-verified beats inferred.
- */
+/** A deterministic detection replaces a model secret finding within 2 lines of it. */
 export function mergeSecretFindings(detected: DetectedSecret[], aiIssues: Finding[]): Finding[] {
   if (!detected.length) return aiIssues;
 

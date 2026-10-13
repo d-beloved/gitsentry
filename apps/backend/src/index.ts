@@ -6,12 +6,12 @@ import sweepRouter from "./api/sweep";
 import rescanRouter from "./api/rescan";
 import evalRouter from "./api/eval";
 import {startReaper} from "./lib/reaper";
+import {startAiSettingsSync} from "./lib/aiSettings";
 
 const app = express();
 
-// Render (and most cloud platforms) sit behind a reverse proxy that sets
-// X-Forwarded-For. Without this, express-rate-limit throws a ValidationError
-// and leaves requests hanging instead of responding.
+// Behind a reverse proxy; without this express-rate-limit throws on
+// X-Forwarded-For and leaves requests hanging.
 app.set("trust proxy", 1);
 
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS
@@ -62,6 +62,7 @@ app.listen(PORT, () => {
   console.log(`Gitsentry.dev backend listening on port ${PORT}`);
   console.log(`Webhook endpoint: POST http://localhost:${PORT}/webhook`);
   startReaper();
+  startAiSettingsSync();
 });
 
 export default app;

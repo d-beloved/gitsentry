@@ -20,8 +20,7 @@ describe("formatReviewBody", () => {
     expect(body).toContain(CLEAN);
   });
 
-  // The regression itself: this body replaced a real HIGH on a live PR because
-  // the scan that produced it had only read a six-line unrelated diff.
+  // An incremental scan of an unrelated diff must not hide earlier open findings.
   it("never claims clean while a finding is carried over", () => {
     const body = formatReviewBody([], [finding()], "latest commits are clean", "scan-abc12345", true);
 
@@ -49,7 +48,6 @@ describe("formatReviewBody", () => {
     const body = formatReviewBody([finding()], [], "summary", "scan-abc12345");
 
     expect(body).toContain("Found **1 issue** in this PR (1 high)");
-    // No section headers to explain when every finding came from this scan.
     expect(body).not.toContain("Introduced by the latest commits");
     expect(body).not.toContain("Still open from earlier commits");
   });

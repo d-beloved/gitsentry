@@ -1,24 +1,5 @@
--- Migration 002: AI usage ledger
--- Run in Supabase SQL editor (Dashboard → SQL Editor → New query → Run).
--- Idempotent — safe to run on an existing database.
---
--- One row per AI provider call, written by both the backend (PR scans, sweeps,
--- classifier, security-context discovery) and the web admin app (outreach
--- sweeps, outreach enrichment, social post generation). This is the single
--- source of truth for "what are we spending on AI" — the finance dashboard
--- prices rows by their exact `model` string and groups them by `surface`,
--- instead of guessing a call's purpose from which model name it happens to
--- share with another surface.
---
--- surface values in use:
---   'pr_scan'            — apps/backend: per-PR diff scan (AI_SCAN_MODEL)
---   'security_sweep'     — apps/backend: manual/scheduled deep sweep (AI_SWEEP_MODEL)
---   'discovery'          — apps/backend: one-time repo auth-file analysis (AI_DISCOVERY_MODEL)
---   'classifier'         — apps/backend: per-scan project-type classification (AI_DISCOVERY_MODEL)
---   'outreach_sweep'     — apps/web: cold-outreach target vulnerability sweep (AI_OUTREACH_MODEL)
---   'outreach_classifier'— apps/web: project-type classification for the above (AI_OUTREACH_MODEL)
---   'outreach_summary'   — apps/web: company/repo summary enrichment (AI_OUTREACH_MODEL)
---   'social_post'        — apps/web: social post generation (AI_SOCIAL_MODEL)
+-- Migration 002: AI usage ledger, one row per provider call; source of truth for AI spend. Idempotent.
+-- surface: pr_scan | security_sweep | discovery | classifier | outreach_sweep | outreach_classifier | outreach_summary | social_post
 
 CREATE TABLE IF NOT EXISTS ai_usage (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -32,9 +13,7 @@ CREATE TABLE IF NOT EXISTS ai_usage (
   created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
--- Migration: add outreach_target_id to existing installs (dedupe key for the
--- one-time backfill in 003_backfill_ai_usage.sql — outreach rows have no
--- scan_id of their own to key off of).
+-- outreach_target_id is the backfill dedupe key for outreach rows (no scan_id).
 ALTER TABLE ai_usage ADD COLUMN IF NOT EXISTS outreach_target_id UUID REFERENCES outreach_targets(id) ON DELETE SET NULL;
 
 CREATE INDEX IF NOT EXISTS ai_usage_created_at_idx ON ai_usage(created_at DESC);

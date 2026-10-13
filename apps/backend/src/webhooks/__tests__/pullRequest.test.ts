@@ -1,6 +1,4 @@
-// handlePR decides, for every PR it declines to scan, whether a required check
-// is left hanging on the commit. These tests cover that decision; the scanning
-// path itself is covered by scanWorker.test.ts.
+// Covers check resolution for skipped PRs; scanning is covered in scanWorker.test.ts.
 jest.mock("../../lib/github", () => ({
   getDiff: jest.fn(),
   getIncrementalDiff: jest.fn(),
@@ -8,7 +6,6 @@ jest.mock("../../lib/github", () => ({
   postSyncSkipComment: jest.fn().mockResolvedValue(undefined),
   postSubscriptionPausedComment: jest.fn().mockResolvedValue(1),
   postSkippedCheckRun: jest.fn().mockResolvedValue(undefined),
-  // Real implementation: which orgs it admits is the thing under test.
   hasRequiredCheck: jest.requireActual("../../lib/github").hasRequiredCheck,
 }));
 jest.mock("../../db/queries", () => ({
@@ -85,14 +82,11 @@ afterEach(() => {
   jest.restoreAllMocks();
 });
 
-// The check run is posted from a floating async IIFE so a GitHub hiccup can
-// never fail the webhook; let its microtasks drain before asserting.
+// The check run is posted from a floating async IIFE; let it drain.
 const flush = (): Promise<void> => new Promise((r) => setImmediate(r));
 
 describe("handlePR — releasing a required check on skips", () => {
   it("releases the check for a dependency-bot PR on a Pro repo", async () => {
-    // The bug that made this whole change urgent: dependency bots are skipped on
-    // every plan, so every Dependabot PR on a Pro repo was unmergeable.
     await handlePR(payload({login: "dependabot[bot]", type: "Bot"}));
     await flush();
 

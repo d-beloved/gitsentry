@@ -1,23 +1,5 @@
--- Migration 003: Backfill ai_usage from pre-existing token columns
--- Run in Supabase SQL editor, AFTER running 002_ai_usage_ledger.sql.
--- Idempotent — safe to run more than once (each INSERT is guarded by a
--- NOT EXISTS check keyed on scan_id/outreach_target_id, so re-running won't
--- double-count rows already backfilled).
---
--- Why this exists: the finance dashboard now reads exclusively from ai_usage.
--- Without this backfill, every month before ai_usage started getting written
--- to (i.e. before 002 was deployed) would show ~$0 AI spend even though real
--- spend happened — it's sitting in scans.tokens_in/tokens_out/ai_model and
--- outreach_targets.tokens_in/tokens_out/ai_model, just not in the new table.
--- Original created_at is preserved so the "Last 6 Months" breakdown still
--- buckets historical spend into the correct month.
---
--- Known gap this CANNOT fix: classifier, discovery, outreach_classifier,
--- outreach_summary, and social_post token usage was never captured anywhere
--- before this change (no column existed for it) — there is nothing to
--- backfill for those surfaces. Historical months will still under-report
--- total spend by whatever those calls actually cost; only pr_scan,
--- security_sweep, and outreach_sweep can be recovered.
+-- Migration 003: backfill ai_usage from scans/outreach_targets token columns. Run after 002.
+-- Idempotent via NOT EXISTS guards; only pr_scan, security_sweep and outreach_sweep are recoverable.
 
 -- 1. Backfill from scans (pr_scan / security_sweep)
 INSERT INTO ai_usage (surface, model, tokens_in, tokens_out, scan_id, repo_id, created_at)
@@ -38,8 +20,7 @@ WHERE s.ai_model IS NOT NULL
       AND au.surface = CASE WHEN s.trigger_type = 'security_sweep' THEN 'security_sweep' ELSE 'pr_scan' END
   );
 
--- 2. Backfill from outreach_targets (outreach_sweep only — classifier and
---    summary calls were never recorded on this table historically)
+-- 2. Backfill from outreach_targets (outreach_sweep only)
 INSERT INTO ai_usage (surface, model, tokens_in, tokens_out, outreach_target_id, created_at)
 SELECT
   'outreach_sweep',

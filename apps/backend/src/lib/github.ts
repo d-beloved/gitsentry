@@ -29,10 +29,9 @@ export async function getInstallationOctokit(installationId: number) {
   return getApp().getInstallationOctokit(installationId);
 }
 
-// Keep the internal alias so existing callers in this file are unchanged
 const getOctokit = getInstallationOctokit;
 
-// ─── GitHub API calls ─────────────────────────────────────────────────────────
+// --- GitHub API calls ---
 
 export async function getDiff(
   repoFullName: string,
@@ -102,8 +101,7 @@ export async function postPRReview(
   repoFullName: string,
   prNumber: number,
   issues: Finding[],
-  /** Required, not defaulted: a caller that forgets this silently reverts to
-   * overwriting a findings comment with an all-clear. Pass [] to say so. */
+  /** Required so a forgetful caller can't overwrite findings with an all-clear. */
   carried: Finding[],
   summary: string,
   scanId: string,
@@ -142,8 +140,7 @@ export async function postCommitComment(
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  // Nothing carried: a push scan posts a fresh comment per commit rather than
-  // editing an earlier one, so it can never overwrite a prior result.
+  // Nothing carried: push scans post a fresh comment per commit, never an edit.
   const body = formatReviewBody(issues, [], summary, scanId);
 
   await octokit.request(
@@ -157,7 +154,7 @@ export async function postCommitComment(
   );
 }
 
-// ─── Comment formatter ────────────────────────────────────────────────────────
+// --- Comment formatter ---
 
 const PRODUCT_NAME = "Gitsentry.dev";
 const PRODUCT_URL = process.env.PRODUCT_URL;
@@ -200,14 +197,7 @@ function formatIssue(issue: Finding): string {
   return out;
 }
 
-/**
- * @param issues  findings raised by the scan that just ran
- * @param carried findings from earlier scans of this PR that are still open and
- *                that this scan did not re-read (its diff never touched their
- *                file). They are reprinted so updating the comment in place can
- *                never downgrade a PR to "clean" on the strength of a scan that
- *                only saw an unrelated slice of it.
- */
+/** `carried` are still-open earlier findings this scan didn't re-read; reprinted so an edit never reads as clean. */
 export function formatReviewBody(
   issues: Finding[],
   carried: Finding[],
@@ -237,8 +227,6 @@ export function formatReviewBody(
   if (countParts.length) body += ` (${countParts.join(", ")})`;
   body += `\n\n---\n\n`;
 
-  // Only label the sections when there is something to tell apart — a first
-  // scan, or any scan that saw the whole PR, still reads exactly as before.
   if (issues.length && carried.length) {
     body += `#### Introduced by the latest commits\n\n`;
   }
@@ -296,20 +284,11 @@ export async function getSweepDiff(
   return response.data as unknown as string;
 }
 
-/**
- * Post a GitHub Check Run after a PR scan.
- *
- * Free plan: conclusion is always "neutral" — findings are visible but PRs are never blocked.
- * Pro plan: conclusion is "failure" when findings exist, enabling branch protection.
- */
 export async function postCheckRun(
   repoFullName: string,
   headSha: string,
   findings: Finding[],
-  /** Still-open findings from earlier scans of this PR — see postPRReview. The
-   * gate has to count them, or a follow-up commit touching an unrelated file
-   * turns the check green while the issue is still in the branch. Required for
-   * the same reason: forgetting it must not quietly pass the PR. */
+  /** Still-open earlier findings; the gate must count them or an unrelated commit turns it green. */
   carried: Finding[],
   installationId: number,
 ): Promise<void> {
@@ -347,31 +326,11 @@ export async function postCheckRun(
   });
 }
 
-// Subscription states that mean a paid plan has lapsed. Paddle sets plan:"free"
-// on lapse, so the status is the only thing that still says "this org used to
-// pay us" — and their repos may still carry the branch protection we set up
-// while they did. See hasRequiredCheck.
+// Paddle sets plan:"free" on lapse, so status is the only sign the org's repos
+// may still carry our branch protection.
 const LAPSED_SUBSCRIPTION_STATUSES = new Set(["canceled", "past_due", "payment_failed"]);
 
-/**
- * Whether "Gitsentry Security Scan" is a required status check on this org's
- * repos — i.e. whether a PR we never report on gets stuck on "Expected —
- * waiting for status to be reported" and blocks the merge forever.
- *
- * setupBranchProtection only ever runs for Pro, so Pro is the main case. Lapsed
- * orgs are here as a safety net: the Paddle webhook does call
- * removeBranchProtectionForOrg on downgrade, but that is best-effort — it walks
- * the org's repos under Promise.allSettled, only covers rows with an
- * installation_id, only touches default_branch, and logs failures rather than
- * retrying them. Any repo it misses keeps a required check we have stopped
- * feeding, which strands every later PR. Admitting lapsed orgs here costs a
- * redundant neutral check where the removal worked, and unblocks the PRs where
- * it did not.
- *
- * Everyone else has no protection, and posting a check run for them would create
- * one where none existed. That is why this gate is here and not just an isPro
- * check at each call site.
- */
+/** Whether our check may be required (an unreported PR would block forever); lapsed orgs included since protection removal is best-effort. */
 export function hasRequiredCheck(
   org: {plan?: string | null; subscription_status?: string | null} | null,
 ): boolean {
@@ -381,11 +340,7 @@ export function hasRequiredCheck(
   return !!status && LAPSED_SUBSCRIPTION_STATUSES.has(status);
 }
 
-/**
- * Why a PR was not scanned. Every one of these is a state we decided on
- * deliberately — the diff had nothing in it, the plan doesn't cover this scan —
- * as opposed to a scan that ran and failed, which is postIncompleteCheckRun.
- */
+/** Deliberate skips only; a scan that ran and failed goes through postIncompleteCheckRun. */
 export type SkippedScanReason =
   | "no_scannable_changes"
   | "dependency_bot"
@@ -432,22 +387,7 @@ const SKIP_COPY: Record<SkippedScanReason, {title: string; summary: string}> = {
   },
 };
 
-/**
- * Report a PR we deliberately did not scan, so the required check resolves.
- *
- * The conclusion is "neutral", which satisfies a required status check and lets
- * the PR merge. That is a deliberate choice, and it is not the same call as
- * postIncompleteCheckRun: there, we tried to establish the PR's security state
- * and could not, so the gate holds. Here we either know there was nothing to
- * check, or we chose not to check for reasons of billing — and blocking a
- * customer's merges over their invoice turns a billing conversation into an
- * outage on their repo. It also gets the required check deleted, which loses us
- * the gate permanently on the very account we wanted to convert.
- *
- * The check still carries the reason in its summary, and the billing cases post
- * a PR comment alongside it — a grey check nobody expands is disclosure, not
- * notification.
- */
+/** Neutral (merge allowed) on purpose: a deliberate skip, unlike a failed scan, must not block merges over billing. */
 export async function postSkippedCheckRun(
   repoFullName: string,
   headSha: string,
@@ -459,13 +399,8 @@ export async function postSkippedCheckRun(
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  // Idempotency. Several of the call sites never write a scan row, so their own
-  // duplicate-delivery guards (which key off the scans table) cannot see a
-  // repeat — a redelivered webhook would stack a second identical grey check on
-  // the same commit. Reporting the same conclusion twice is harmless to the
-  // gate but looks like a malfunction in the PR. On a lookup failure we post
-  // anyway: a duplicate check is a cosmetic problem, an unreported one blocks
-  // the merge.
+  // Some callers write no scan row, so redeliveries are deduped here. On lookup
+  // failure post anyway: a duplicate is cosmetic, a missing check blocks merge.
   try {
     const {data} = await octokit.request(
       "GET /repos/{owner}/{repo}/commits/{ref}/check-runs",
@@ -502,26 +437,11 @@ export async function postSkippedCheckRun(
   });
 }
 
-/**
- * Close out the check run for a scan that never produced a result.
- *
- * Pro repos have "Gitsentry Security Scan" as a required status check, and the
- * only check run we ever post is the completed one at the end of a successful
- * scan. So a scan that dies — the worker killed mid-run, the queued job dropped
- * — leaves the PR sitting on "Expected — waiting for status to be reported"
- * with no way for the author to clear it. The reaper closes the row out in the
- * database; this closes it out on the PR.
- *
- * "timed_out" rather than "neutral" on purpose: a required security gate must
- * not open itself because our own pipeline failed. It renders as a red check
- * whose Re-run button is wired to handleCheckRun, so the author's fix is one
- * click.
- */
+/** "timed_out", not "neutral": a security gate must not open because our pipeline failed; Re-run rescans. */
 export async function postIncompleteCheckRun(
   repoFullName: string,
   headSha: string,
   installationId: number,
-  /** Whether the scan's credit was handed back, so the summary can say so. */
   creditRefunded: boolean,
 ): Promise<void> {
   const octokit = await getOctokit(installationId);
@@ -546,17 +466,11 @@ export async function postIncompleteCheckRun(
   });
 }
 
-// ─── Branch protection ────────────────────────────────────────────────────────
+// --- Branch protection ---
 
 const CHECK_NAME = "Gitsentry Security Scan";
 
-/**
- * Ensures the "Gitsentry Security Scan" required status check is present on the
- * repo's default branch. If branch protection doesn't exist yet, creates minimal
- * protection (no PR review requirement, no push restrictions, admins not enforced).
- * If protection already exists, non-destructively adds our check to the existing
- * required_status_checks list.
- */
+/** Adds our required check without disturbing existing protection; creates minimal protection if none. */
 export async function setupBranchProtection(
   repoFullName: string,
   branch: string,
@@ -576,11 +490,11 @@ export async function setupBranchProtection(
     hasExistingProtection = true;
     existingContexts = data.required_status_checks?.contexts ?? [];
   } catch {
-    // 404 = no protection yet — handled below
+    // 404 = no protection yet.
   }
 
   if (hasExistingProtection) {
-    if (existingContexts.includes(CHECK_NAME)) return; // already set up
+    if (existingContexts.includes(CHECK_NAME)) return;
     await octokit.request(
       "POST /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks/contexts",
       {owner, repo, branch, contexts: [CHECK_NAME]},
@@ -662,10 +576,9 @@ export async function postBotPRSkipComment(
   );
 }
 
-// ─── Project classifier support ───────────────────────────────────────────────
+// --- Project classifier support ---
 
-// Source code and documentation extensions to exclude when scanning for manifests.
-// Everything else at the root level that is small is likely a manifest of some kind.
+// Any small root-level file outside these extensions is treated as a manifest.
 const SOURCE_EXTS = new Set([
   "ts", "tsx", "js", "jsx", "mjs", "cjs",
   "py", "rb", "go", "java", "kt", "scala", "cs", "fs", "vb",
@@ -680,18 +593,13 @@ const SOURCE_EXTS = new Set([
 const DOC_NAME_RE = /^(readme|license|licence|changelog|contributing|authors|notice|patents|codeowners|security)/i;
 
 function looksLikeManifest(path: string): boolean {
-  if (path.includes("/")) return false; // root-level only
+  if (path.includes("/")) return false;
   if (DOC_NAME_RE.test(path)) return false;
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   if (SOURCE_EXTS.has(ext)) return false;
   return true;
 }
 
-/**
- * Scans the root tree for any file that looks like a project manifest
- * (non-source, non-doc root-level file) and returns its content.
- * Works across any language — no hardcoded list of filenames needed.
- */
 export async function fetchRepoManifestFiles(
   repoFullName: string,
   branch: string,
@@ -700,7 +608,6 @@ export async function fetchRepoManifestFiles(
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  // Fetch root tree (non-recursive — manifests are at root)
   let rootFiles: Array<{path?: string; type?: string; size?: number; sha?: string}> = [];
   try {
     const {data: tree} = await octokit.request(
@@ -720,7 +627,6 @@ export async function fetchRepoManifestFiles(
 
   if (!rootFiles.length) return null;
 
-  // Fetch all candidate manifests in parallel and concatenate (up to 5, 3KB each)
   const results = await Promise.all(
     rootFiles.slice(0, 5).map(async (f) => {
       try {
@@ -743,46 +649,32 @@ export async function fetchRepoManifestFiles(
   return null;
 }
 
-// ─── Security context discovery ───────────────────────────────────────────────
+// --- Security context discovery ---
 
 const MAX_FILE_BYTES = 4_000;
 const MAX_AUTH_FILES = 10;
 const SOURCE_EXT = /\.(ts|tsx|js|jsx|py|rb|go|java|php|cs|rs|swift|kt)$/i;
 
-/**
- * Returns true when a file path looks like it could contain authentication,
- * authorization, or session management logic. Works across frameworks and
- * naming conventions — no hardcoded path list required.
- * Exported so securityContext.ts can use the same rule for cache invalidation.
- */
+/** Shared with securityContext.ts so cache invalidation uses the same rule. */
 export function isAuthRelevantPath(filePath: string): boolean {
   if (filePath === ".gitsentry/context.md") return true;
   const basename = filePath.split("/").pop() ?? "";
   if (!SOURCE_EXT.test(basename)) return false;
 
-  // Exact high-signal names
   if (/^(auth|middleware|session|passport|guard|guards)\.(ts|tsx|js|jsx|py|rb|go|java|php|cs|rs|swift|kt)$/i.test(basename)) return true;
 
-  // auth- prefixed or -auth suffixed variants (auth-config.ts, use-auth.ts, etc.)
   if (/^auth[-_.]/i.test(basename) || /[-_.]auth\./i.test(basename)) return true;
 
-  // Compound names: auth-config, auth-helper, auth-service, auth-utils, auth-middleware, auth-guard, auth-provider
   if (/auth[-_](config|helper|utils|service|guard|middleware|provider|context|client)\./i.test(basename)) return true;
 
-  // Route files inside an /auth/ directory — catches NextAuth.js/Auth.js route handlers
+  // Route handlers under /auth/ (NextAuth.js/Auth.js).
   if (/^route\.(ts|js|tsx|jsx)$/i.test(basename) && /\/auth\//i.test(filePath)) return true;
 
-  // NextAuth.js catch-all route pattern: [...nextauth].ts or [...nextauth]/route.ts
   if (/\[\.\.\.nextauth\]/i.test(filePath)) return true;
 
   return false;
 }
 
-/**
- * Discovers authentication and middleware files by walking the repo's git tree,
- * then fetches their content. Works regardless of the project's naming conventions
- * or framework — no hardcoded path list required.
- */
 export async function fetchRepoAuthFiles(
   repoFullName: string,
   branch: string,
@@ -809,7 +701,7 @@ export async function fetchRepoAuthFiles(
     pathsToFetch = items
       .filter((item) => item.type === "blob" && item.path && isAuthRelevantPath(item.path))
       .map((item) => item.path as string)
-      .sort((a, b) => a.split("/").length - b.split("/").length) // shallower paths first
+      .sort((a, b) => a.split("/").length - b.split("/").length)
       .slice(0, MAX_AUTH_FILES);
   } catch (err) {
     console.warn("[github] fetchRepoAuthFiles tree walk failed:", (err as Error).message);
@@ -840,11 +732,7 @@ export async function fetchRepoAuthFiles(
     .map((r) => r.value);
 }
 
-/**
- * Removes the "Gitsentry Security Scan" required status check from the repo's
- * default branch. Swallows 404s — if branch protection doesn't exist (e.g.
- * user deleted it manually), there's nothing to remove.
- */
+/** Swallows 404: no protection means nothing to remove. */
 export async function removeBranchProtection(
   repoFullName: string,
   branch: string,
@@ -865,13 +753,7 @@ export async function removeBranchProtection(
 
 const PLAN_LABELS: Record<string, string> = {free: "Free", starter: "Starter", pro: "Pro"};
 
-/**
- * Posts (or updates, if existingCommentId is given) the quota-exceeded comment.
- * Returns the PR comment's id so callers can persist it and update the same
- * comment on the next quota-exceeded push, instead of stacking a new one each
- * time. commitSha-only targets aren't updatable (each commit is a distinct
- * event) so no id is returned for that branch.
- */
+/** Returns the PR comment id so the next push updates it instead of stacking; null for commit targets. */
 export async function postUpgradeComment(
   repoFullName: string,
   target: {prNumber?: number | null; commitSha?: string | null},
@@ -931,12 +813,6 @@ export async function postUpgradeComment(
   return null;
 }
 
-/**
- * Posts a PR comment explaining that scanning is paused because the org's
- * subscription ended (so private-repo scanning is disabled). Mirrors
- * postUpgradeComment — used when a downgraded org opens a PR on a private repo,
- * so the reason for "no scan" is visible on the PR, not just silently dropped.
- */
 export async function postSubscriptionPausedComment(
   repoFullName: string,
   prNumber: number,

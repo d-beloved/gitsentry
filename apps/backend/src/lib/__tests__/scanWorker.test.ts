@@ -1,7 +1,4 @@
-// The worker's terminal-error branch is the one path that runs *after* a scan
-// has already failed, so a bug in it replaces the real cause with its own. The
-// db/github/notifier layers are mocked to nothing: the assertions here are
-// entirely about which error comes out and whether the job was discarded.
+// A bug in the terminal-error branch replaces the real failure cause with its own.
 jest.mock("../../db/queries", () => ({
   markScanStarted: jest.fn().mockResolvedValue(true),
   getOrgByRepoId: jest.fn(),
@@ -66,8 +63,7 @@ function fakeJob(): Bull.Job<ScanJobData> & {discard: jest.Mock} {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  // The failure path calls getOrgByRepoId a second time to look up the org for
-  // a refund; only the first call is the one under test.
+  // The failure path calls this again for the refund; only the first call is under test.
   mockGetOrg.mockResolvedValue(null);
   jest.spyOn(console, "error").mockImplementation(() => {});
   jest.spyOn(console, "warn").mockImplementation(() => {});
@@ -81,10 +77,8 @@ describe("scanWorkerProcessor terminal errors", () => {
     const timeout = new AITimeoutError("[ai] AI call timed out after 120s");
     mockGetOrg.mockRejectedValueOnce(timeout);
 
-    // Bull reads the failure off the rejection, so the error that surfaces here
-    // is the one the customer and the logs get. discard() is synchronous and
-    // returns undefined — treating it as a promise threw a TypeError that
-    // replaced the timeout with "Cannot read properties of undefined".
+    // discard() is synchronous; awaiting it as a promise would replace the timeout
+    // with a TypeError.
     await expect(processor(job)).rejects.toBe(timeout);
     expect(job.discard).toHaveBeenCalledTimes(1);
   });

@@ -3,13 +3,7 @@ import { saveScan, getOrgByInstallationId } from "../db/queries";
 import { parseDiffStats, truncateDiff } from "../lib/differ";
 import { dispatchScan } from "../lib/queue";
 
-/**
- * Handles check_run: rerequested — fired when a Pro user clicks "Re-run"
- * on the "Gitsentry Security Scan" check in a GitHub PR.
- *
- * Free and Starter users never receive check runs, so this event only ever
- * fires for Pro organisations.
- */
+/** Handles "Re-run" on our check run (Pro only). */
 export async function handleCheckRun(payload: Record<string, unknown>): Promise<void> {
   const action = payload.action as string;
   const checkRun = payload.check_run as Record<string, unknown>;

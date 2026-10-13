@@ -38,8 +38,7 @@ describe("effectiveQuotaPeriod", () => {
   });
 
   it("falls back to the calendar once the anchor is two months stale", () => {
-    // The dead-man's switch: at least one renewal webhook never arrived, and
-    // without this the counter could never reset and would block the org forever.
+    // Dead-man's switch: a missed renewal webhook must not block the org forever.
     expect(
       effectiveQuotaPeriod({plan: "starter", anchor: "2026-06", hasPaddleSubscription: true, now: NOW}),
     ).toBe("2026-08");
@@ -80,8 +79,6 @@ describe("usageThisPeriod", () => {
   });
 
   it("reports 0 when the counter is left over from an expired period", () => {
-    // This is what the dashboard got wrong: it showed the stale 50 while the
-    // next scan was about to reset the counter to 1.
     expect(
       usageThisPeriod({
         plan: "starter", anchor: "2026-06", hasPaddleSubscription: false, count: 50, now: NOW,

@@ -156,7 +156,7 @@ Free and Starter plans get no check run. Findings show up as PR comments and mer
 - Node.js 20+
 - A GitHub App (see below)
 - A Supabase project
-- An API key for your AI provider (any Gemini-compatible or OpenAI-compatible endpoint)
+- An API key for an AI provider: Anthropic, Gemini, or any OpenAI-compatible endpoint
 - Redis, optional. Without it, scans process inline.
 
 ### 1. Create a GitHub App
@@ -291,6 +291,8 @@ packages/scanner-contract/
 
 packages/ai-provider/
   index.ts            ← provider selection from AI_* env
+  env.ts              ← AI_* / AI_<PROVIDER>_* env lookup
+  anthropic.ts        ← Anthropic Messages API
   gemini.ts           ← Google Generative AI
   openaiCompat.ts     ← any OpenAI-compatible endpoint
   schema.ts           ← structured-output schema helpers

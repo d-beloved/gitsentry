@@ -1,27 +1,11 @@
-/**
- * Scanner eval CLI — measures detection quality against a fixed benchmark so
- * prompt/model/pipeline changes can be compared instead of guessed at.
- *
- * Usage:
- *   yarn eval                       # full pipeline (scan + verifier + secrets detector)
- *   VERIFY_FINDINGS=off yarn eval   # A/B the verifier's effect
- *
- * Requires the same env as the backend (AI_API_KEY + model vars); no database
- * or GitHub access is needed. The scoring itself lives in harness.ts, shared
- * with the admin-triggered run so both report the same numbers.
- *
- * Reported metrics:
- *   recall     — expected vulnerabilities detected / expected total
- *   clean FPs  — findings reported on clean fixtures (should be 0)
- *   extras     — unexpected findings on vulnerable fixtures (informational)
- */
+// Eval CLI: `yarn eval`; VERIFY_FINDINGS=off to A/B the verifier, AI_PROVIDER=<vendor>
+// to score another configured provider. Needs the backend's AI env, no DB.
 import { loadFixtures, runEval, type EvalCaseResult } from "./harness";
 
 function secs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-/** One line per fixture, printed as it finishes — the sweep takes minutes. */
 function printCase(c: EvalCaseResult): void {
   if (c.error) {
     console.log(`✗ ${c.fixtureId} — ERROR (${c.error})`);
@@ -42,7 +26,6 @@ function printCase(c: EvalCaseResult): void {
   );
 }
 
-/** Reconstructs the failure lines from the scored cases. */
 function failuresFor(c: EvalCaseResult): string[] {
   if (c.error) return [`${c.fixtureId}: scan errored — ${c.error}`];
   if (c.isClean) {
@@ -79,10 +62,7 @@ async function main() {
     for (const f of failures) console.log(`  - ${f}`);
   }
 
-  // Non-zero exit when quality regresses hard, so this can gate CI later.
-  // Errored fixtures count their expectations as misses rather than dropping
-  // out of the denominator — an outage that silently raised recall would be
-  // exactly the wrong signal for a gate.
+  // Non-zero exit on regression so this can gate CI.
   const recallOk =
     run.expectedTotal === 0 ||
     run.detected / run.expectedTotal >= Number(process.env.EVAL_MIN_RECALL ?? 0);

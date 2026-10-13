@@ -1,10 +1,4 @@
-/**
- * Project classifier — prompt builder and response parser.
- *
- * No Gemini dependency here: each app (backend, web) calls its own Gemini
- * client with the prompt returned by buildClassifierPrompt() and passes the
- * raw text to parseClassificationResponse().
- */
+// Provider-agnostic: each app sends this prompt with its own client and parses the raw text here.
 
 import type { ProjectClassification, ProjectType, DeploymentContext } from "./scanner-rules";
 
@@ -17,13 +11,6 @@ const VALID_DEPLOYMENT_CONTEXTS = new Set<DeploymentContext>([
   "deployed_by_author", "consumed_by_others",
 ]);
 
-/**
- * Build the classification prompt.
- *
- * @param repoFullName  "owner/repo"
- * @param filePaths     All file paths available (from diff, tree listing, or fetched files)
- * @param manifestContent  Raw content of a manifest file (package.json, Gemfile, Cargo.toml, etc.) if available
- */
 export function buildClassifierPrompt(
   repoFullName: string,
   filePaths: string[],
@@ -73,10 +60,7 @@ Return ONLY valid JSON (no markdown fences, no explanation):
 }`;
 }
 
-/**
- * Parse the raw Gemini response text into a ProjectClassification.
- * Returns a safe "unknown" fallback on any parse failure.
- */
+/** Returns a safe "unknown" fallback (full rules) on any parse failure. */
 export function parseClassificationResponse(text: string): ProjectClassification {
   const fallback: ProjectClassification = {
     project_type: "unknown",
@@ -122,10 +106,6 @@ export function parseClassificationResponse(text: string): ProjectClassification
   }
 }
 
-/**
- * Extract file paths from a unified diff string.
- * Used by the backend scanner where the diff is already available.
- */
 export function extractPathsFromDiff(diff: string): string[] {
   const matches = [...diff.matchAll(/^diff --git a\/(.+) b\/.+$/gm)];
   return [...new Set(matches.map((m) => m[1]))];

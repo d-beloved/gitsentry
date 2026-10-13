@@ -66,9 +66,8 @@ router.post(
       (org?.subscription_status === "active" || org?.subscription_status == null);
     const scanLimit = SCAN_LIMITS[plan] ?? SCAN_LIMITS.free;
 
-    // Atomically claim a scan slot before doing any GitHub API work (all plans,
-    // including Pro which is capped at 500/month).
-    // quotaAlreadyClaimed is set on the job so the worker skips its own claim.
+    // Claim the slot atomically before any GitHub work; quotaAlreadyClaimed on
+    // the job tells the worker to skip its own claim.
     const claimed = org
       ? await tryClaimScan(
           org.id, scanLimit, plan, org.scan_month ?? null,
@@ -84,10 +83,8 @@ router.post(
       return;
     }
 
-    // Advisory remaining count (one slot already claimed above).
-    // For paid plans, scan_month is Paddle-controlled so compare directly against
-    // the stored count. For free, the RPC may have just reset on a month boundary
-    // (stale org.scan_month won't match currentMonth), so treat that as 0 used.
+    // Advisory only. On free, a stale scan_month means the RPC just reset the
+    // month, so treat it as 0 used; paid scan_month is Paddle-controlled.
     const currentCalMonth = new Date().toISOString().slice(0, 7);
     const scansUsedBefore =
       plan === "free"

@@ -64,21 +64,18 @@ export interface PublicStatsRow {
   updated_at: string;
 }
 
-/** Minimal org shape returned by installation/repo lookups */
 export interface OrgSummary {
   id: string;
   plan: OrgPlan;
   subscription_status: string | null;
 }
 
-/** Extended org shape used for scan-limit gating in the worker and sweep enforcement */
 export interface OrgWithUsage extends OrgSummary {
   scan_count_month: number | null;
   scan_month: string | null;
   sweep_trials_used: number;
   sweep_count_month: number | null;
   sweep_month: string | null;
-  // Needed to tell a real subscription from a hand-granted plan: only the former
-  // has a Paddle renewal to reset its counters. See lib/quotaPeriod.ts.
+  // Distinguishes a real subscription (Paddle renewal resets counters) from a hand-granted plan.
   paddle_subscription_id: string | null;
 }

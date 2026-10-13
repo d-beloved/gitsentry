@@ -1,58 +1,22 @@
 import type { AIProvider, GenerateRequest, GenerateResponse, JsonSchema } from "./types";
 import { describeSchema, toStrictSchema } from "./schema";
 
-/**
- * Provider for any OpenAI-shaped /chat/completions endpoint.
- *
- * One implementation covers every host that speaks that dialect, because the
- * only thing separating them is a base URL and how seriously they take a
- * schema. Written against fetch rather than the `openai` SDK: the surface used
- * here is one POST, and both apps already run on a runtime with fetch built in.
- *
- * Nothing here branches on which host is configured. Endpoints differ in ways
- * that are not derivable from a URL — whether strict schemas are enforced,
- * whether they are served from a different path, how a cache hit is reported —
- * so those are configuration, not inference. A host table baked into the code
- * would be stale the week after it was written.
- *
- * `extraBody` is the general form of that rule. Hosts keep inventing knobs that
- * change what a call costs and how long it takes — reasoning toggles, effort
- * levels, safety settings — and each is spelled differently. Rather than grow a
- * vendor switch per knob, callers pass the fields through verbatim; see
- * AI_EXTRA_BODY in ./index.ts.
- */
+// Any OpenAI-shaped /chat/completions host. Nothing branches on which host is
+// configured: host differences are configuration (incl. extraBody), not inference.
 
-/**
- * How the provider asks for structured output, in descending order of
- * enforcement:
- *
- *   json_schema — response_format with strict:true. Grammar-constrained, and
- *     the right choice on any endpoint that genuinely implements it.
- *   tool_strict — a single forced function call with strict:true. The fallback
- *     for hosts that enforce schemas on the tool-calling path but not on
- *     response_format. Some serve it from a different base path; point
- *     AI_BASE_URL at that path directly if so.
- *   json_object — valid JSON, unvalidated shape, schema described in-prompt.
- *
- * Defaults to json_object because it is the only one of the three that every
- * OpenAI-compatible host implements, and the failure mode of guessing high is a
- * hard error on every scan. Opt up with AI_STRUCTURED_MODE once the endpoint is
- * confirmed to enforce the stronger mode — the eval is there to confirm it.
- */
+// Strongest to weakest enforcement. Defaults to json_object, the only mode every
+// host implements; a wrong stronger guess would fail every scan.
 export type StructuredMode = "json_schema" | "tool_strict" | "json_object";
 
 export interface OpenAICompatOptions {
   apiKey: string;
-  /** Full base URL of the endpoint, e.g. https://host.example/v1 */
   baseURL: string;
   structuredMode?: StructuredMode;
-  /** Endpoint slugs to pin routing to, most preferred first. Routers only. */
+  /** Routers only: endpoint slugs to pin routing to, most preferred first. */
   providerOrder?: string[];
-  /** When true, routing may leave `providerOrder`. Routers only. */
+  /** Routers only: whether routing may leave `providerOrder`. */
   allowFallbacks?: boolean;
-  /** Host-specific request-body fields merged into every call. See AI_EXTRA_BODY. */
   extraBody?: Record<string, unknown>;
-  /** Short label for logs and token rows. Defaults to the base URL's host. */
   name?: string;
 }
 
@@ -60,8 +24,6 @@ const CHAT_PATH = "/chat/completions";
 
 export class OpenAICompatProvider implements AIProvider {
   readonly name: string;
-  /** Exposed so the eval harness can record which structured-output path a run
-   *  actually took, since the default is not visible in env alone. */
   readonly structuredMode: StructuredMode;
   private opts: Required<Omit<OpenAICompatOptions, "name">>;
 
@@ -83,23 +45,15 @@ export class OpenAICompatProvider implements AIProvider {
     const schema = req.schema ? toStrictSchema(req.schema) : undefined;
     const schemaName = req.schemaName ?? "response";
 
-    // In json_object mode the schema only exists as prose, so it belongs in the
-    // cached prefix rather than the variable tail — it repeats verbatim on every
-    // call, and appending it to the tail would push a large constant block past
-    // the cache breakpoint on every request.
+    // In json_object mode the schema prose is constant, so it goes in the cached
+    // prefix, not past the cache breakpoint.
     const system =
       schema && mode === "json_object"
         ? [req.system, describeSchema(schema)].filter(Boolean).join("\n\n")
         : req.system;
 
-    // Host knobs go in first so the fields this class computes below always
-    // win: an extra body is for parameters the code does not model, never a
-    // side door around AI_STRUCTURED_MODE. Reserved keys are rejected when the
-    // provider is constructed, so a collision here cannot pass silently.
-    //
-    // The call's own knobs merge over the provider's, which is what makes a
-    // global default plus a per-role override work: set the process-wide
-    // setting once, then let the roles that need something else say so.
+    // Extra bodies go first so computed fields always win; per-call knobs
+    // override the provider's global ones key by key.
     const body: Record<string, unknown> = {
       ...this.opts.extraBody,
       ...req.extraBody,
@@ -120,25 +74,21 @@ export class OpenAICompatProvider implements AIProvider {
             function: { name: schemaName, strict: true, parameters: schema },
           },
         ];
-        // Without this the model may answer in prose instead of calling the
-        // function, which defeats the point of using tools for schema enforcement.
+        // Otherwise the model may answer in prose and skip the schema.
         body.tool_choice = { type: "function", function: { name: schemaName } };
       } else {
         body.response_format = { type: "json_object" };
       }
     }
 
-    // Routing controls are understood by aggregators that front several
-    // endpoints, and rejected as unknown keys by hosts that serve their own
-    // model — so they are sent only when a pin was actually configured.
+    // Only sent when pinned: non-aggregator hosts 400 on the unknown key.
     if (this.opts.providerOrder.length) {
       body.provider = {
         order: this.opts.providerOrder,
         allow_fallbacks: this.opts.allowFallbacks,
-        // Never route to an endpoint that would silently drop response_format
-        // and hand back unvalidated prose.
+        // Never route to an endpoint that would silently drop response_format.
         require_parameters: true,
-        // Customer source code — exclude endpoints that retain prompts.
+        // Customer source code: exclude endpoints that retain prompts.
         data_collection: "deny",
       };
     }
@@ -161,12 +111,10 @@ export class OpenAICompatProvider implements AIProvider {
     const json = (await res.json()) as ChatCompletion;
     return {
       text: extractText(json, mode),
-      // prompt_tokens already includes the cached slice, matching Gemini's
-      // promptTokenCount — so cost maths stays identical across providers.
+      // Includes the cached slice, consistent with the other providers' tokensIn.
       tokensIn: json.usage?.prompt_tokens ?? 0,
       tokensOut: json.usage?.completion_tokens ?? 0,
-      // Two spellings in the wild: nested under prompt_tokens_details, or flat.
-      // Reading both means a host swap does not silently zero the cache column.
+      // Hosts report cache hits nested or flat; read both.
       cachedTokens:
         json.usage?.prompt_tokens_details?.cached_tokens ??
         json.usage?.prompt_cache_hit_tokens ??
@@ -176,14 +124,8 @@ export class OpenAICompatProvider implements AIProvider {
   }
 }
 
-/**
- * Builds the message array, marking the stable prefix as cacheable.
- *
- * The `cache_control` breakpoint is what makes prefix caching work on hosts
- * that do not cache implicitly, which is most of them. Hosts that do cache
- * automatically ignore the marker, so it is safe to always send and keeps the
- * routed path one env var away rather than one refactor away.
- */
+// The cache_control breakpoint enables prefix caching on hosts that don't cache
+// implicitly; hosts that do ignore it.
 function buildMessages(system: string | undefined, prompt: string) {
   const messages: unknown[] = [];
   if (system) {
@@ -196,13 +138,7 @@ function buildMessages(system: string | undefined, prompt: string) {
   return messages;
 }
 
-/**
- * Pulls the payload out of whichever field the chosen mode fills.
- *
- * tool_strict puts it in function.arguments; the response_format modes put it
- * in content. Falls back across both so a provider that quietly ignored
- * tool_choice still yields its answer instead of an empty string.
- */
+// Falls back to content so a host that ignored tool_choice still yields its answer.
 function extractText(json: ChatCompletion, mode: StructuredMode): string {
   const message = json.choices?.[0]?.message;
   if (mode === "tool_strict") {

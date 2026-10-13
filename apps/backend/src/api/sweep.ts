@@ -24,7 +24,7 @@ function verifyInternalKey(
   next: NextFunction,
 ): void {
   const key = process.env.INTERNAL_API_KEY;
-  // If the key is not configured the endpoint must be closed
+  // Fail closed when the key is not configured.
   if (!key) {
     console.error(
       "[sweep] INTERNAL_API_KEY is not configured — rejecting request",
@@ -63,17 +63,13 @@ router.post(
       return;
     }
 
-    // Verify the repo actually belongs to this installation
     const repoOwned = await verifyRepoInstallation(repoId, installationId);
     if (!repoOwned) {
       res.status(403).json({error: "Forbidden"});
       return;
     }
 
-    // Enforce per-plan sweep limits:
-    //   Free    — 1 lifetime trial (sweep_trials_used)
-    //   Starter — 1 / month        (try_claim_sweep RPC)
-    //   Pro     — 10 / month       (try_claim_sweep RPC)
+    // Free gets one lifetime trial; paid plans get a monthly quota.
     const SWEEP_LIMITS: Record<string, number> = {free: 1, starter: 1, pro: 10};
 
     const org = await getOrgByRepoId(repoId);
@@ -91,7 +87,6 @@ router.post(
     let usedMonthlyQuota = false;
 
     if (plan === "free") {
-      // One-time lifetime trial for free users
       claimedSweep = await tryClaimSweepTrial(org.id);
       if (!claimedSweep) {
         res.status(402).json({
@@ -101,7 +96,6 @@ router.post(
         return;
       }
     } else {
-      // Starter (1/month) and Pro (10/month) use the monthly quota
       const sweepLimit = SWEEP_LIMITS[plan] ?? 1;
       claimedSweep = await tryClaimMonthlySweep(
         org.id, sweepLimit, plan, org.sweep_month ?? null,
@@ -124,7 +118,7 @@ router.post(
     try {
       const diff = await getSweepDiff(repoFullName, branch, installationId);
       if (!diff || diff.length < 10) {
-        // Refund the slot — no scan was actually run
+        // No scan ran, so refund the slot.
         if (usedMonthlyQuota) await refundMonthlySweep(org.id).catch(() => {});
         else await refundSweepTrial(org.id).catch(() => {});
         res.status(422).json({error: "No diff found — push some commits first"});
@@ -188,8 +182,7 @@ router.post(
         tokensIn: tokens_in,
         tokensOut: tokens_out,
         modelName: model_name,
-        // A sweep reads the whole branch slice it was given, so everything in
-        // that diff is fair game to supersede from the previous sweep.
+        // A sweep reads its whole diff, so every path in it may supersede old findings.
         examinedPaths: extractScannablePaths(diff),
       });
 
@@ -212,10 +205,9 @@ router.post(
           errorDetail: errorMessage,
         }).catch(() => {});
       }
-      // Refund the slot on unexpected failure so the user isn't charged for a broken sweep
       if (usedMonthlyQuota) await refundMonthlySweep(org.id).catch(() => {});
       else await refundSweepTrial(org.id).catch(() => {});
-      // Return a generic message — never expose raw Error.message to callers.
+      // Never expose raw error messages to callers.
       res.status(500).json({error: "Sweep failed. Please try again."});
     }
   },

@@ -1,14 +1,5 @@
-/**
- * Tests for the eval scoring engine.
- *
- * The harness is the only thing standing between "the scanner got worse" and
- * "we shipped it anyway", and it now feeds two consumers — the CLI gate and the
- * admin dashboard. Miscounting here is invisible: it produces a plausible
- * number, not an error. So the cases pinned below are the ones where a wrong
- * score would still look reasonable — a hit credited on the right category in
- * the wrong file, a false positive on a clean fixture counted as an informational
- * extra, and a scan that errored quietly dropping out of the recall denominator.
- */
+// Miscounting in the eval harness yields a plausible number, not an error, so
+// these pin the cases where a wrong score would still look reasonable.
 import type { AIAnalysisResult } from "../../../../../packages/scanner-contract/types";
 
 jest.mock("../ai", () => ({ analyzeCode: jest.fn() }));
@@ -50,8 +41,7 @@ describe("runCase scoring", () => {
     expect(hit.detected).toBe(1);
     expect(hit.extras).toBe(0);
 
-    // Right category, wrong file — this is the miscount that would silently
-    // inflate recall on a fixture set where one category appears twice.
+    // Right category, wrong file must not count; it would silently inflate recall.
     mockAnalyze.mockResolvedValue(result([finding("sql_injection", "b/api/orders.ts")]));
     const miss = await runCase(vulnerable([{ file: "api/users.ts", categories: ["sql_injection"] }]));
     expect(miss.detected).toBe(0);
@@ -89,8 +79,7 @@ describe("runCase scoring", () => {
     const c = await runCase(vulnerable([{ file: "api/users.ts", categories: ["idor"] }]));
     expect(c.error).toBe("provider 503");
     expect(c.detected).toBe(0);
-    // The denominator must keep the expectation. Dropping it would let an
-    // outage raise recall, which is the wrong direction for a CI gate.
+    // Dropping it from the denominator would let an outage raise recall.
     expect(c.expected).toBe(1);
     expect(c.misses).toEqual(["idor in api/users.ts"]);
   });

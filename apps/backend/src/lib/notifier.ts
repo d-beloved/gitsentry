@@ -10,8 +10,6 @@ import type { Finding, Severity } from "../../../../packages/scanner-contract/ty
 const FROM_EMAIL = process.env.FROM_EMAIL;
 const PRODUCT_URL = process.env.PRODUCT_URL;
 
-// ─── Slack ────────────────────────────────────────────────────────────────────
-
 async function postToSlack(
   webhookUrl: string,
   params: {
@@ -92,8 +90,6 @@ async function postToSlack(
 
   if (!res.ok) throw new Error(`Slack webhook returned HTTP ${res.status}`);
 }
-
-// ─── Email (Resend) ───────────────────────────────────────────────────────────
 
 async function sendAlertEmail(
   to: string,
@@ -209,8 +205,6 @@ async function sendAlertEmail(
   }
 }
 
-// ─── Main export ──────────────────────────────────────────────────────────────
-
 type EffectiveConfig = {
   slack_webhook: string | null;
   email: string | null;
@@ -218,11 +212,8 @@ type EffectiveConfig = {
   alert_on_main: boolean;
 };
 
-// Resolves the effective alert destination for a repo: a per-repo alert_config
-// takes priority, otherwise the org-level defaults. Returns null when no
-// Slack/email destination is configured. Branch/severity gating is left to the
-// caller so different alert types (findings vs. scan failures) can apply their
-// own rules.
+// Per-repo config wins over org defaults. Branch/severity gating is left to
+// callers so findings and failure alerts can apply different rules.
 async function resolveAlertConfig(repoId: string): Promise<EffectiveConfig | null> {
   const { data: perRepo } = await supabase
     .from("alert_configs")
@@ -273,7 +264,6 @@ export async function notifyIfNeeded(
   const effective = await resolveAlertConfig(repoId);
   if (!effective) return;
 
-  // Respect alert_on_main: skip non-default-branch pushes if set
   const isMainBranch = branch === "main" || branch === "master";
   if (effective.alert_on_main && !isMainBranch && triggerType !== "pull_request") return;
 
@@ -304,10 +294,6 @@ export async function notifyIfNeeded(
 
   if (promises.length) await Promise.all(promises);
 }
-
-// ─── Scan-failure alert ───────────────────────────────────────────────────────
-// Sent when a scan errored after consuming a scan credit. The credit is
-// auto-restored, so the message reassures the user and points them to retry.
 
 const FAILURE_REASON_LABEL: Record<string, string> = {
   pipeline_error: "the scan pipeline hit an error",
@@ -403,9 +389,7 @@ async function sendFailureEmail(
   }
 }
 
-// Notifies the repo/org's configured Slack + email that a scan failed. Unlike
-// notifyIfNeeded this bypasses the severity threshold (there are no findings —
-// the scan itself failed) and always fires regardless of branch.
+/** Bypasses severity and branch gating: a failed scan always alerts. */
 export async function notifyScanFailure(
   repoId: string,
   repoFullName: string,

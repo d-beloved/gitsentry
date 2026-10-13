@@ -1,17 +1,5 @@
-/**
- * Scanner eval engine — shared by the CLI (`yarn eval`) and the admin-triggered
- * run behind /admin/eval.
- *
- * Extracted from run.ts so both paths score identically. Two copies of this
- * logic would drift, and a benchmark whose numbers differ between the terminal
- * and the dashboard is worse than no benchmark — it invites comparing two
- * figures that were never comparable.
- *
- * Fixtures live in eval/fixtures as <case>.diff + <case>.expected.json pairs:
- *   { "name": "...", "expect": [ { "file": "...", "categories": ["sql_injection"] } ] }
- * An empty "expect" array marks a clean fixture — any finding on it is a false
- * positive.
- */
+// Eval engine shared by `yarn eval` and /admin/eval so both score identically.
+// Fixtures: <case>.diff + <case>.expected.json; an empty "expect" marks a clean fixture.
 import { existsSync, readdirSync, readFileSync } from "fs";
 import { join } from "path";
 import { analyzeCode } from "../apps/backend/src/lib/ai";
@@ -42,13 +30,11 @@ export interface EvalCaseResult {
   isClean: boolean;
   expected: number;
   detected: number;
-  /** Findings matching no expectation. Informational on vulnerable fixtures,
-   *  but the false-positive count on clean ones. */
+  /** Unmatched findings: informational on vulnerable fixtures, false positives on clean ones. */
   extras: number;
   durationMs: number;
   error: string | null;
   findings: EvalFinding[];
-  /** "<categories> in <file>" for each expectation not hit. */
   misses: string[];
   tokensIn: number;
   tokensOut: number;
@@ -67,13 +53,7 @@ export interface EvalRunResult {
   durationMs: number;
 }
 
-/**
- * Fixtures are data, not code, so `tsc` never copies them into dist/. Under
- * `yarn eval` (tsx, running from source) __dirname already points at eval/;
- * under the compiled backend it points at dist/eval/, where no fixtures exist.
- * Resolving through candidates keeps one harness working in both, and
- * EVAL_FIXTURES_DIR covers a layout neither guess anticipates.
- */
+// `tsc` never copies fixtures into dist/, so try source-relative candidates too.
 function resolveFixturesDir(): string {
   const candidates = [
     process.env.EVAL_FIXTURES_DIR,
@@ -124,11 +104,7 @@ function missLabel(exp: Expectation): string {
   return `${exp.categories.join("|")} in ${exp.file}`;
 }
 
-/**
- * Scores one fixture. A scan error is recorded on the case, never thrown — one
- * bad fixture must not abandon the other eleven mid-sweep, and a run that
- * errored on two cases is still worth looking at.
- */
+/** Records a scan error on the case rather than throwing, so one bad fixture can't abort the run. */
 export async function runCase(fixture: Fixture): Promise<EvalCaseResult> {
   const started = Date.now();
   const base = {
@@ -180,17 +156,7 @@ export async function runCase(fixture: Fixture): Promise<EvalCaseResult> {
   }
 }
 
-/**
- * Runs every fixture in sequence.
- *
- * Sequential on purpose: the scan path is the thing under measurement, and
- * twelve concurrent scans would contend for the same provider rate limit,
- * distorting the per-case timings this benchmark reports.
- *
- * `onCase` fires after each fixture so callers can stream progress — the admin
- * run uses it to update its row while the sweep is still going, which is what
- * makes a three-minute job watchable.
- */
+/** Sequential so concurrent scans don't contend for rate limits and distort timings. */
 export async function runEval(
   onCase?: (result: EvalCaseResult, index: number, total: number) => void | Promise<void>,
 ): Promise<EvalRunResult> {
@@ -210,8 +176,6 @@ export async function runEval(
     cases,
     expectedTotal: sum((c) => c.expected),
     detected: sum((c) => c.detected),
-    // Clean fixtures carry the false-positive signal; extras on vulnerable
-    // fixtures are informational and stay counted separately.
     cleanFPs: cases.filter((c) => c.isClean).reduce((n, c) => n + c.extras, 0),
     extras: cases.filter((c) => !c.isClean).reduce((n, c) => n + c.extras, 0),
     tokensIn: sum((c) => c.tokensIn),

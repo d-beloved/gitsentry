@@ -2,14 +2,8 @@ import { GoogleGenerativeAI, type ResponseSchema } from "@google/generative-ai";
 import type { AIProvider, GenerateRequest, GenerateResponse } from "./types";
 import { stripUnsupported } from "./schema";
 
-/**
- * Gemini provider — the behaviour GitSentry shipped with, behind the interface.
- *
- * Deliberately does *not* call toStrictSchema(): Gemini speaks the loose OpenAPI
- * dialect the schema literals are already written in, and rewriting `nullable`
- * into `anyOf` here would be a behaviour change on the path that currently
- * works. Only the keywords Gemini rejects outright are stripped.
- */
+// No toStrictSchema(): Gemini takes the loose OpenAPI dialect the schema literals
+// use, so only keywords it rejects outright are stripped.
 export class GeminiProvider implements AIProvider {
   readonly name = "gemini";
   private client: GoogleGenerativeAI;
@@ -30,8 +24,7 @@ export class GeminiProvider implements AIProvider {
         : { responseMimeType: "application/json" },
     });
 
-    // The SDK gets both handles: `signal` frees the socket, `timeout` is its own
-    // budget. Callers still wrap this in withAIDeadline() for the wall clock.
+    // `signal` frees the socket; callers still enforce the wall clock via withAIDeadline().
     const result = await model.generateContent(req.prompt, {
       ...(req.signal ? { signal: req.signal } : {}),
       ...(req.timeoutMs ? { timeout: req.timeoutMs } : {}),

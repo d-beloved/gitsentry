@@ -1,5 +1,3 @@
-/** Public scanner contract — findings and analysis shapes emitted by the open-source backend. */
-
 export type Severity = "critical" | "high" | "medium" | "low";
 
 export type FindingCategory =
@@ -88,13 +86,7 @@ export interface AIAnalysisResult {
   coverage?: ScanCoverage;
   tokens_in?: number;
   tokens_out?: number;
-  /**
-   * Prompt tokens served from the provider's cache. A subset of tokens_in, not
-   * an addition to it. Populated when the provider reports it; 0 otherwise.
-   * Cache hits bill at a fraction of the miss rate — an order of magnitude or
-   * more on some hosts — so cost figures that ignore this overstate spend on
-   * prefix-heavy prompts.
-   */
+  /** Cached prompt tokens: a subset of tokens_in, not an addition to it. */
   cached_tokens?: number;
   model_name?: string;
   threat_model?: {
@@ -118,7 +110,6 @@ export interface ScanContext {
   branch: string;
   triggerType: TriggerType;
   author: string | null;
-  /** Per-repo security context (auth patterns, ownership helpers, learned false-positive rules). Injected into the AI prompt when present. */
   repoSecurityContext?: string | null;
 }
 
@@ -133,7 +124,6 @@ export interface ScanJobData {
   commitSha?: string | null;
   branch: string;
   triggerType: string;
-  // Set to true when the caller already atomically claimed a quota slot before
-  // dispatching. The worker skips its own tryClaimScan to prevent double-counting.
+  // Caller already claimed a quota slot; the worker skips its own claim to avoid double-counting.
   quotaAlreadyClaimed?: boolean;
 }
