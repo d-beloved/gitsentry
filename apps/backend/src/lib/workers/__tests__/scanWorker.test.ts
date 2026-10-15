@@ -30,6 +30,7 @@ jest.mock("../../../db/queries", () => ({
   tryClaimScan: jest.fn(),
   getPreviousPRCommentId: jest.fn().mockResolvedValue(null),
   getOpenPRFindings: jest.fn().mockResolvedValue([]),
+  getFindingRefs: jest.fn().mockResolvedValue(new Map()),
   updateScanCommentId: jest.fn().mockResolvedValue(undefined),
   recordAiUsage: jest.fn().mockResolvedValue(undefined),
   scanQuotaAlreadyClaimed: jest.fn().mockResolvedValue(false),
@@ -52,6 +53,7 @@ import {
   getPreviousPRCommentId,
   getOpenPRFindings,
   saveFindings,
+  getFindingRefs,
 } from "../../../db/queries";
 import {
   postPRReview,
@@ -470,5 +472,21 @@ describe("processScanJob — issues already on record", () => {
 
     expect(notifyIfNeeded).not.toHaveBeenCalled();
     expect(postPRReview).toHaveBeenCalled();
+  });
+
+  it("tells the PR comment which other PR already lists each duplicate", async () => {
+    const dupe = issue({id: "f-dupe", duplicate_of: "f-pr3"});
+    const own = issue({id: "f-own", duplicate_of: "f-mine"});
+    (analyzeCode as jest.Mock).mockResolvedValue({issues: [dupe, own], summary: "s"});
+    (saveFindings as jest.Mock).mockResolvedValue([dupe, own]);
+    (getFindingRefs as jest.Mock).mockResolvedValue(new Map([
+      ["f-pr3", {trigger_type: "pull_request", trigger_ref: "3"}],
+      ["f-mine", {trigger_type: "pull_request", trigger_ref: "7"}],
+    ]));
+
+    await processScanJob(baseJob);
+
+    const trackedIn = (postPRReview as jest.Mock).mock.calls[0][9];
+    expect([...trackedIn]).toEqual([["f-pr3", "PR #3"]]);
   });
 });

@@ -5,6 +5,7 @@ import webhookRouter from "./webhooks/router";
 import sweepRouter from "./api/sweep";
 import rescanRouter from "./api/rescan";
 import evalRouter from "./api/eval";
+import prCommentRouter from "./api/prComment";
 import {startReaper} from "./lib/reaper";
 import {startAiSettingsSync} from "./lib/aiSettings";
 
@@ -36,6 +37,15 @@ const sweepLimiter = rateLimit({
   message: {error: "Too many requests"},
 });
 
+// Dashboard-driven internal calls; one per triage action, so looser than sweeps.
+const internalLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {error: "Too many requests"},
+});
+
 app.use(
   express.json({
     verify: (req: Request, _res: Response, buf: Buffer) => {
@@ -52,6 +62,7 @@ app.use("/webhook", webhookLimiter, webhookRouter);
 app.use("/api/sweep", sweepLimiter, sweepRouter);
 app.use("/api/rescan", sweepLimiter, rescanRouter);
 app.use("/api/eval", sweepLimiter, evalRouter);
+app.use("/api/pr-comment", internalLimiter, prCommentRouter);
 
 app.use((_req: Request, res: Response) =>
   res.status(404).json({error: "Not found"}),

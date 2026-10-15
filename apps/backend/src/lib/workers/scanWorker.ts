@@ -30,6 +30,7 @@ import {
   getScanRefundState,
 } from "../../db/queries";
 import { notifyIfNeeded, notifyScanFailure } from "../notifier";
+import { trackedElsewhere } from "../prComment";
 
 // Paddle sets plan:"free" on lapse, so entitlement keys off status, not plan.
 const LAPSED_SUBSCRIPTION_STATUSES = new Set(["canceled", "past_due", "payment_failed"]);
@@ -217,7 +218,10 @@ export async function processScanJob(
         : Promise.resolve([] as Awaited<ReturnType<typeof saveFindings>>),
       prNumber != null ? getPreviousPRCommentId(repoId, prNumber) : Promise.resolve(null),
       prNumber != null
-        ? getOpenPRFindings(repoId, prNumber, scanId)
+        ? getOpenPRFindings(repoId, prNumber, scanId).catch((err: Error) => {
+            console.error("[findings] getOpenPRFindings failed:", err.message);
+            return [] as Finding[];
+          })
         : Promise.resolve([] as Finding[]),
     ]);
 
@@ -252,8 +256,9 @@ export async function processScanJob(
         !!existingCommentId &&
         !commentShowsFindings;
       if (!skipCleanUpdate) {
+        const trackedIn = await trackedElsewhere([...findings, ...carried], prNumber);
         const commentId = await withTimeout(
-          postPRReview(repoFullName, prNumber, findings, carried, summary, scanId, installationId, existingCommentId, coverage),
+          postPRReview(repoFullName, prNumber, findings, carried, summary, scanId, installationId, existingCommentId, coverage, trackedIn),
           30_000,
           "postPRReview",
         );

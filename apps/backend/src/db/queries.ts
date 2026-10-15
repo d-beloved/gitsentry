@@ -361,6 +361,78 @@ export async function saveFindings(
   return saved;
 }
 
+export interface PRCommentTarget {
+  repoId: string;
+  prNumber: number;
+  repoFullName: string;
+  installationId: number;
+}
+
+/** The distinct PRs these scans belong to, with what's needed to edit their comment. */
+export async function getPRCommentTargets(scanIds: string[]): Promise<PRCommentTarget[]> {
+  if (!scanIds.length) return [];
+  const {data, error} = await supabase
+    .from("scans")
+    .select("repo_id, trigger_ref, repos(full_name, installation_id)")
+    .in("id", scanIds)
+    .eq("trigger_type", "pull_request");
+  if (error) throw new Error(`getPRCommentTargets: ${error.message}`);
+
+  type Row = {repo_id: string; trigger_ref: string; repos: {full_name: string; installation_id: number | null} | null};
+  const out = new Map<string, PRCommentTarget>();
+  for (const row of (data ?? []) as unknown as Row[]) {
+    const prNumber = parseInt(row.trigger_ref, 10);
+    if (!row.repos?.installation_id || isNaN(prNumber)) continue;
+    out.set(`${row.repo_id}#${prNumber}`, {
+      repoId: row.repo_id,
+      prNumber,
+      repoFullName: row.repos.full_name,
+      installationId: row.repos.installation_id,
+    });
+  }
+  return [...out.values()];
+}
+
+/** The scan that owns the PR's current comment, with its status. */
+export async function getLatestPRCommentScan(
+  repoId: string,
+  prNumber: number,
+): Promise<{scanId: string; commentId: number; status: string} | null> {
+  const {data} = await supabase
+    .from("scans")
+    .select("id, gh_comment_id, status")
+    .eq("repo_id", repoId)
+    .eq("trigger_type", "pull_request")
+    .eq("trigger_ref", String(prNumber))
+    .not("gh_comment_id", "is", null)
+    .order("created_at", {ascending: false})
+    .limit(1)
+    .maybeSingle();
+  const row = data as {id: string; gh_comment_id: number; status: string} | null;
+  return row ? {scanId: row.id, commentId: row.gh_comment_id, status: row.status} : null;
+}
+
+/** The PR or branch each listed finding came from, keyed by finding id. */
+export async function getFindingRefs(
+  ids: string[],
+): Promise<Map<string, {trigger_type: string; trigger_ref: string}>> {
+  const out = new Map<string, {trigger_type: string; trigger_ref: string}>();
+  if (!ids.length) return out;
+  const {data, error} = await supabase
+    .from("findings")
+    .select("id, scans(trigger_type, trigger_ref)")
+    .in("id", ids);
+  if (error) {
+    console.error("[findings] getFindingRefs failed:", error.message);
+    return out;
+  }
+  type Row = {id: string; scans: {trigger_type: string; trigger_ref: string} | null};
+  for (const row of (data ?? []) as unknown as Row[]) {
+    if (row.scans) out.set(row.id, row.scans);
+  }
+  return out;
+}
+
 /** Canonical, unresolved, non-stale findings in these files from other scans of the repo. */
 async function getDedupeCandidates(
   repoId: string,
@@ -542,21 +614,25 @@ async function promoteDuplicates(retiredIds: string[]): Promise<void> {
   }
 }
 
-/** Still-open findings from earlier scans of this PR, so a narrow incremental scan can't read as clean. */
+/**
+ * Still-open findings from earlier scans of this PR, so a narrow incremental scan can't read as clean.
+ * Throws on a read failure, so a comment edit never mistakes it for zero findings.
+ */
 export async function getOpenPRFindings(
   repoId: string,
   prNumber: number,
-  excludeScanId: string,
+  excludeScanId?: string,
 ): Promise<Finding[]> {
-  const {data: priorScans} = await supabase
+  let scansQ = supabase
     .from("scans")
     .select("id")
     .eq("repo_id", repoId)
     .eq("trigger_type", "pull_request")
     .eq("trigger_ref", String(prNumber))
-    .eq("status", "complete")
-    .neq("id", excludeScanId);
-
+    .eq("status", "complete");
+  if (excludeScanId) scansQ = scansQ.neq("id", excludeScanId);
+  const {data: priorScans, error: scansError} = await scansQ;
+  if (scansError) throw new Error(`getOpenPRFindings: ${scansError.message}`);
   if (!priorScans?.length) return [];
 
   const {data, error} = await supabase
@@ -567,11 +643,7 @@ export async function getOpenPRFindings(
     .eq("is_false_positive", false)
     .eq("is_stale", false);
 
-  if (error) {
-    console.error("[findings] getOpenPRFindings failed:", error.message);
-    return [];
-  }
-
+  if (error) throw new Error(`getOpenPRFindings: ${error.message}`);
   return (data ?? []) as Finding[];
 }
 
