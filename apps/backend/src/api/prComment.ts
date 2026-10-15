@@ -1,4 +1,5 @@
-import express, {Request, Response, NextFunction} from "express";
+import express, {Request, Response} from "express";
+import {requireInternalKey} from "./internalAuth";
 import {getPRCommentTargets} from "../db/queries";
 import {refreshPRComment} from "../lib/prComment";
 
@@ -7,19 +8,7 @@ const router = express.Router();
 const MAX_SCAN_IDS = 200;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function verifyInternalKey(req: Request, res: Response, next: NextFunction): void {
-  const key = process.env.INTERNAL_API_KEY;
-  if (!key) {
-    console.error("[pr-comment] INTERNAL_API_KEY is not configured — rejecting request");
-    res.status(503).json({error: "Endpoint not available"});
-    return;
-  }
-  if (req.headers["authorization"] !== `Bearer ${key}`) {
-    res.status(401).json({error: "Unauthorized"});
-    return;
-  }
-  next();
-}
+const verifyInternalKey = requireInternalKey("pr-comment");
 
 // Called by the dashboard after findings are resolved or dismissed, so each affected PR's comment
 // stops listing them without waiting for the next push.

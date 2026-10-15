@@ -1,4 +1,5 @@
-import express, {Request, Response, NextFunction} from "express";
+import express, {Request, Response} from "express";
+import {requireInternalKey} from "./internalAuth";
 import {analyzeSecuritySweep} from "../lib/ai";
 import {getSweepDiff} from "../lib/github";
 import {resolveSecurityContext} from "../lib/securityContext";
@@ -18,27 +19,7 @@ import {truncateDiff, extractScannablePaths} from "../lib/differ";
 
 const router = express.Router();
 
-function verifyInternalKey(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void {
-  const key = process.env.INTERNAL_API_KEY;
-  // Fail closed when the key is not configured.
-  if (!key) {
-    console.error(
-      "[sweep] INTERNAL_API_KEY is not configured — rejecting request",
-    );
-    res.status(503).json({error: "Endpoint not available"});
-    return;
-  }
-  const auth = req.headers["authorization"];
-  if (auth !== `Bearer ${key}`) {
-    res.status(401).json({error: "Unauthorized"});
-    return;
-  }
-  next();
-}
+const verifyInternalKey = requireInternalKey("sweep");
 
 router.post(
   "/",

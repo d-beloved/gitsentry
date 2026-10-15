@@ -1,4 +1,4 @@
-import {formatReviewBody} from "../github";
+import {codeSpan, formatReviewBody} from "../github";
 import type {Finding} from "../../../../../packages/scanner-contract/types";
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
@@ -79,5 +79,19 @@ describe("formatReviewBody", () => {
       expect(body).toContain("Found **1 issue** in this PR");
       expect(body).not.toContain("<details>");
     });
+
+    it("keeps hostile file paths and categories from breaking out of the line", () => {
+      const evil = finding({duplicate_of: "canon-1", file_path: "a`<img src=x>`.ts", category: "<b>x</b>" as Finding["category"]});
+      const body = formatReviewBody([evil], [], "summary", "scan-abc12345", false, undefined, tracked);
+
+      expect(body).toContain("bxb in `aimg src=x.ts:28` · see PR #12");
+      expect(body).not.toContain("<img");
+    });
+  });
+});
+
+describe("codeSpan", () => {
+  it("strips backticks, angle brackets and newlines from a branch name", () => {
+    expect(codeSpan("feat/`<img src=x>`\nmore")).toBe("`feat/img src=xmore`");
   });
 });

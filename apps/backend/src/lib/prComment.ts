@@ -1,4 +1,4 @@
-import {postPRReview} from "./github";
+import {codeSpan, postPRReview} from "./github";
 import {
   getFindingRefs,
   getLatestPRCommentScan,
@@ -10,7 +10,7 @@ import type {Finding} from "../../../../packages/scanner-contract/types";
 function refLabel(ref: {trigger_type: string; trigger_ref: string}): string {
   if (ref.trigger_type === "pull_request") return `PR #${ref.trigger_ref}`;
   if (ref.trigger_type === "push_main") return "main";
-  return `\`${ref.trigger_ref}\``;
+  return codeSpan(ref.trigger_ref);
 }
 
 /** duplicate_of id → the other PR (or main) where that issue is already written up. */

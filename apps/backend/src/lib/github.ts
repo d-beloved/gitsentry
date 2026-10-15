@@ -199,6 +199,11 @@ function formatIssue(issue: Finding): string {
   return out;
 }
 
+/** Inline code that can't break out: branch names and model output may carry backticks or markup. */
+export function codeSpan(text: string): string {
+  return `\`${text.replace(/[`<>\r\n]/g, "")}\``;
+}
+
 // Issues already written up on another PR get one line each, folded away, instead of a full repeat.
 function formatTrackedElsewhere(tracked: Array<{issue: Finding; where: string}>): string {
   const places = [...new Set(tracked.map((t) => t.where))];
@@ -207,9 +212,9 @@ function formatTrackedElsewhere(tracked: Array<{issue: Finding; where: string}>)
   out += `> The same code is in this branch, so ${n !== 1 ? "they" : "it"} still count${n !== 1 ? "" : "s"} toward this PR's check. Resolving or dismissing on the dashboard clears every PR at once.\n\n`;
   for (const {issue, where} of sortBySeverity(tracked.map((t) => ({...t, severity: t.issue.severity})))) {
     const emoji = SEVERITY_EMOJI[issue.severity] || "⚪";
-    const label = CATEGORY_LABELS[issue.category] || issue.category;
+    const label = CATEGORY_LABELS[issue.category] || issue.category.replace(/[^\w -]/g, "");
     const loc = `${issue.file_path}${issue.line_number ? `:${issue.line_number}` : ""}`;
-    out += `- ${emoji} **${issue.severity.toUpperCase()}** — ${label} in \`${loc}\` · see ${where}\n`;
+    out += `- ${emoji} **${issue.severity.toUpperCase()}** — ${label} in ${codeSpan(loc)} · see ${where}\n`;
   }
   out += `\n</details>\n\n`;
   return out;
