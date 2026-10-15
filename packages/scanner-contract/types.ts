@@ -69,6 +69,8 @@ export interface Finding {
   is_false_positive?: boolean;
   is_resolved?: boolean;
   resolved_at?: string | null;
+  /** Set when the same issue is already on record from another scan; that row is the one listed. */
+  duplicate_of?: string | null;
   created_at?: string;
 }
 

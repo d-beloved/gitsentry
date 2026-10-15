@@ -155,6 +155,10 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS attacker_profile      TEXT;
 -- a scan that never looked at the file must not retire it. See markStaleFindings().
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS is_stale BOOLEAN DEFAULT FALSE;
 
+-- Points at the finding already on record for the same issue (another PR, or main); that one
+-- is listed and alerted, this one only appears on its own PR. See saveFindings().
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS duplicate_of UUID REFERENCES findings(id) ON DELETE SET NULL;
+
 -- Per-repo auth/rate-limit context injected into the scan prompt.
 ALTER TABLE repos ADD COLUMN IF NOT EXISTS security_context TEXT;
 
@@ -242,6 +246,8 @@ CREATE INDEX IF NOT EXISTS idx_findings_repo_id      ON findings(repo_id);
 CREATE INDEX IF NOT EXISTS idx_findings_severity     ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_is_resolved  ON findings(is_resolved);
 CREATE INDEX IF NOT EXISTS idx_findings_is_stale     ON findings(is_stale);
+CREATE INDEX IF NOT EXISTS idx_findings_duplicate_of ON findings(duplicate_of);
+CREATE INDEX IF NOT EXISTS idx_findings_repo_file    ON findings(repo_id, file_path);
 CREATE INDEX IF NOT EXISTS idx_installations_installer ON installations(installer_github_id);
 
 -- RPC functions
