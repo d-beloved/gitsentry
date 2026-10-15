@@ -108,11 +108,13 @@ export async function postPRReview(
   installationId: number,
   existingCommentId?: number | null,
   coverage?: ScanCoverage,
+  /** duplicate_of id → where that issue is already listed, e.g. "PR #12". */
+  trackedIn?: Map<string, string>,
 ): Promise<number> {
   const octokit = await getOctokit(installationId);
   const [owner, repo] = repoFullName.split("/");
 
-  const body = formatReviewBody(issues, carried, summary, scanId, !!existingCommentId, coverage);
+  const body = formatReviewBody(issues, carried, summary, scanId, !!existingCommentId, coverage, trackedIn);
 
   if (existingCommentId) {
     const {data} = await octokit.request(
@@ -197,20 +199,54 @@ function formatIssue(issue: Finding): string {
   return out;
 }
 
+/** Inline code that can't break out: branch names and model output may carry backticks or markup. */
+export function codeSpan(text: string): string {
+  return `\`${text.replace(/[`<>\r\n]/g, "")}\``;
+}
+
+// Issues already written up on another PR get one line each, folded away, instead of a full repeat.
+function formatTrackedElsewhere(tracked: Array<{issue: Finding; where: string}>): string {
+  const places = [...new Set(tracked.map((t) => t.where))];
+  const n = tracked.length;
+  let out = `<details>\n<summary>${n} issue${n !== 1 ? "s" : ""} already flagged in ${places.join(", ")}</summary>\n\n`;
+  out += `> The same code is in this branch, so ${n !== 1 ? "they" : "it"} still count${n !== 1 ? "" : "s"} toward this PR's check. Resolving or dismissing on the dashboard clears every PR at once.\n\n`;
+  for (const {issue, where} of sortBySeverity(tracked.map((t) => ({...t, severity: t.issue.severity})))) {
+    const emoji = SEVERITY_EMOJI[issue.severity] || "⚪";
+    const label = CATEGORY_LABELS[issue.category] || issue.category.replace(/[^\w -]/g, "");
+    const loc = `${issue.file_path}${issue.line_number ? `:${issue.line_number}` : ""}`;
+    out += `- ${emoji} **${issue.severity.toUpperCase()}** — ${label} in ${codeSpan(loc)} · see ${where}\n`;
+  }
+  out += `\n</details>\n\n`;
+  return out;
+}
+
 /** `carried` are still-open earlier findings this scan didn't re-read; reprinted so an edit never reads as clean. */
 export function formatReviewBody(
-  issues: Finding[],
-  carried: Finding[],
+  allIssues: Finding[],
+  allCarried: Finding[],
   summary: string,
   scanId: string,
   isUpdate = false,
   coverage?: ScanCoverage,
+  trackedIn?: Map<string, string>,
 ): string {
+  const whereTracked = (f: Finding) => (f.duplicate_of ? trackedIn?.get(f.duplicate_of) : undefined);
+  const issues = allIssues.filter((f) => !whereTracked(f));
+  const carried = allCarried.filter((f) => !whereTracked(f));
+  const tracked = [...allIssues, ...allCarried]
+    .filter((f) => whereTracked(f))
+    .map((issue) => ({issue, where: whereTracked(issue)!}));
+
   let body = `## 🔐 ${PRODUCT_NAME} Security Scan\n\n`;
 
   if (issues.length === 0 && carried.length === 0) {
     body += formatCoverageNote(coverage);
-    body += `**No security issues found** in this PR. ✅\n\n`;
+    if (tracked.length) {
+      body += `**No new security issues** in this PR.\n\n`;
+      body += formatTrackedElsewhere(tracked);
+    } else {
+      body += `**No security issues found** in this PR. ✅\n\n`;
+    }
     body += formatFooter(summary, scanId, isUpdate);
     return body;
   }
@@ -239,6 +275,8 @@ export function formatReviewBody(
       : `> Raised by an earlier scan of this PR and not yet addressed. Line numbers are from the commit that raised them and may have shifted.\n\n`;
     for (const issue of sortBySeverity(carried)) body += formatIssue(issue);
   }
+
+  if (tracked.length) body += formatTrackedElsewhere(tracked);
 
   body += formatFooter(summary, scanId, isUpdate);
   return body;

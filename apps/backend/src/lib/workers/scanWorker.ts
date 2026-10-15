@@ -30,6 +30,7 @@ import {
   getScanRefundState,
 } from "../../db/queries";
 import { notifyIfNeeded, notifyScanFailure } from "../notifier";
+import { trackedElsewhere } from "../prComment";
 
 // Paddle sets plan:"free" on lapse, so entitlement keys off status, not plan.
 const LAPSED_SUBSCRIPTION_STATUSES = new Set(["canceled", "past_due", "payment_failed"]);
@@ -211,15 +212,21 @@ export async function processScanJob(
     // A `synchronize` scan reads only the incremental diff, usually a slice of the PR.
     const examinedPaths = extractScannablePaths(diff);
 
-    const [findings, previousComment, priorOpen] = await Promise.all([
+    const [saved, previousComment, priorOpen] = await Promise.all([
       issues.length > 0
         ? saveFindings(scanId, issues)
         : Promise.resolve([] as Awaited<ReturnType<typeof saveFindings>>),
       prNumber != null ? getPreviousPRCommentId(repoId, prNumber) : Promise.resolve(null),
       prNumber != null
-        ? getOpenPRFindings(repoId, prNumber, scanId)
+        ? getOpenPRFindings(repoId, prNumber, scanId).catch((err: Error) => {
+            console.error("[findings] getOpenPRFindings failed:", err.message);
+            return [] as Finding[];
+          })
         : Promise.resolve([] as Finding[]),
     ]);
+
+    // An issue already dismissed elsewhere stays off this PR too.
+    const findings = saved.filter((f) => !f.is_false_positive);
 
     // Findings in files this scan didn't re-read carry forward rather than vanish.
     const examined = new Set(examinedPaths);
@@ -244,13 +251,14 @@ export async function processScanJob(
       const commentShowsFindings = !!previousComment?.hadFindings || priorOpen.length > 0;
 
       const skipCleanUpdate =
-        issues.length === 0 &&
+        findings.length === 0 &&
         carried.length === 0 &&
         !!existingCommentId &&
         !commentShowsFindings;
       if (!skipCleanUpdate) {
+        const trackedIn = await trackedElsewhere([...findings, ...carried], prNumber);
         const commentId = await withTimeout(
-          postPRReview(repoFullName, prNumber, findings, carried, summary, scanId, installationId, existingCommentId, coverage),
+          postPRReview(repoFullName, prNumber, findings, carried, summary, scanId, installationId, existingCommentId, coverage, trackedIn),
           30_000,
           "postPRReview",
         );
@@ -266,9 +274,11 @@ export async function processScanJob(
       );
     }
 
-    if (issues.length > 0) {
+    // Issues already on record from another PR or branch were alerted on then.
+    const fresh = findings.filter((f) => !f.duplicate_of);
+    if (fresh.length > 0) {
       await withTimeout(
-        notifyIfNeeded(repoId, repoFullName, findings, triggerType, branch, scanId),
+        notifyIfNeeded(repoId, repoFullName, fresh, triggerType, branch, scanId),
         30_000,
         "notifyIfNeeded",
       );
@@ -285,7 +295,7 @@ export async function processScanJob(
       );
     }
 
-    await updateScanStatus(scanId, issues, Date.now() - startedAt, "complete", {
+    await updateScanStatus(scanId, findings, Date.now() - startedAt, "complete", {
       tokensIn: tokens_in ?? 0,
       tokensOut: tokens_out ?? 0,
       modelName: model_name,

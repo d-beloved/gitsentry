@@ -30,6 +30,7 @@ jest.mock("../../../db/queries", () => ({
   tryClaimScan: jest.fn(),
   getPreviousPRCommentId: jest.fn().mockResolvedValue(null),
   getOpenPRFindings: jest.fn().mockResolvedValue([]),
+  getFindingRefs: jest.fn().mockResolvedValue(new Map()),
   updateScanCommentId: jest.fn().mockResolvedValue(undefined),
   recordAiUsage: jest.fn().mockResolvedValue(undefined),
   scanQuotaAlreadyClaimed: jest.fn().mockResolvedValue(false),
@@ -51,6 +52,8 @@ import {
   getScanRefundState,
   getPreviousPRCommentId,
   getOpenPRFindings,
+  saveFindings,
+  getFindingRefs,
 } from "../../../db/queries";
 import {
   postPRReview,
@@ -59,7 +62,7 @@ import {
   postIncompleteCheckRun,
   postSubscriptionPausedComment,
 } from "../../github";
-import { notifyScanFailure } from "../../notifier";
+import { notifyScanFailure, notifyIfNeeded } from "../../notifier";
 
 const baseJob: ScanJobData = {
   scanId: "scan-1",
@@ -425,5 +428,65 @@ describe("processScanJob — required check resolution", () => {
     await processScanJob({ ...baseJob, prNumber: null, triggerType: "push_main" } as ScanJobData);
 
     expect(postSkippedCheckRun).not.toHaveBeenCalled();
+  });
+});
+
+describe("processScanJob — issues already on record", () => {
+  const issue = (over: Record<string, unknown>) => ({
+    severity: "high", category: "sql_injection", file_path: "src/db.ts", line_number: 10,
+    code_snippet: "db.query(sql)", description: "d", fix_suggestion: "f", ...over,
+  });
+
+  beforeEach(() => {
+    (getOrgByRepoId as jest.Mock).mockResolvedValue({
+      id: "org-1", plan: "starter", subscription_status: "active", scan_month: "2026-07",
+    });
+    (tryClaimScan as jest.Mock).mockResolvedValue(true);
+  });
+
+  it("keeps an inherited dismissal off the PR and out of alerts, and alerts only new issues", async () => {
+    const fresh = issue({id: "f-new"});
+    const dupe = issue({id: "f-dupe", file_path: "src/a.ts", duplicate_of: "f-pr3"});
+    const dismissed = issue({id: "f-fp", file_path: "src/b.ts", duplicate_of: "f-old", is_false_positive: true});
+    (analyzeCode as jest.Mock).mockResolvedValue({issues: [fresh, dupe, dismissed], summary: "s"});
+    (saveFindings as jest.Mock).mockResolvedValue([fresh, dupe, dismissed]);
+
+    await processScanJob(baseJob);
+
+    const posted = (postPRReview as jest.Mock).mock.calls[0][2];
+    expect(posted.map((f: {id: string}) => f.id)).toEqual(["f-new", "f-dupe"]);
+    expect(notifyIfNeeded).toHaveBeenCalledWith(
+      "repo-1", "acme/app", [fresh], "pull_request", "feat", "scan-1",
+    );
+    expect(updateScanStatus).toHaveBeenLastCalledWith(
+      "scan-1", [fresh, dupe], expect.any(Number), "complete", expect.anything(),
+    );
+  });
+
+  it("sends no alert when every issue was already on record", async () => {
+    const dupe = issue({id: "f-dupe", duplicate_of: "f-pr3"});
+    (analyzeCode as jest.Mock).mockResolvedValue({issues: [dupe], summary: "s"});
+    (saveFindings as jest.Mock).mockResolvedValue([dupe]);
+
+    await processScanJob(baseJob);
+
+    expect(notifyIfNeeded).not.toHaveBeenCalled();
+    expect(postPRReview).toHaveBeenCalled();
+  });
+
+  it("tells the PR comment which other PR already lists each duplicate", async () => {
+    const dupe = issue({id: "f-dupe", duplicate_of: "f-pr3"});
+    const own = issue({id: "f-own", duplicate_of: "f-mine"});
+    (analyzeCode as jest.Mock).mockResolvedValue({issues: [dupe, own], summary: "s"});
+    (saveFindings as jest.Mock).mockResolvedValue([dupe, own]);
+    (getFindingRefs as jest.Mock).mockResolvedValue(new Map([
+      ["f-pr3", {trigger_type: "pull_request", trigger_ref: "3"}],
+      ["f-mine", {trigger_type: "pull_request", trigger_ref: "7"}],
+    ]));
+
+    await processScanJob(baseJob);
+
+    const trackedIn = (postPRReview as jest.Mock).mock.calls[0][9];
+    expect([...trackedIn]).toEqual([["f-pr3", "PR #3"]]);
   });
 });

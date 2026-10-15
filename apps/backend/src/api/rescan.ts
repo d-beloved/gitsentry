@@ -1,4 +1,5 @@
-import express, {Request, Response, NextFunction} from "express";
+import express, {Request, Response} from "express";
+import {requireInternalKey} from "./internalAuth";
 import {getDiff, getInstallationOctokit} from "../lib/github";
 import {
   saveScan,
@@ -14,20 +15,7 @@ const router = express.Router();
 
 const SCAN_LIMITS: Record<string, number> = {free: 10, starter: 50, pro: 500};
 
-function verifyInternalKey(req: Request, res: Response, next: NextFunction): void {
-  const key = process.env.INTERNAL_API_KEY;
-  if (!key) {
-    console.error("[rescan] INTERNAL_API_KEY is not configured — rejecting request");
-    res.status(503).json({error: "Endpoint not available"});
-    return;
-  }
-  const auth = req.headers["authorization"];
-  if (auth !== `Bearer ${key}`) {
-    res.status(401).json({error: "Unauthorized"});
-    return;
-  }
-  next();
-}
+const verifyInternalKey = requireInternalKey("rescan");
 
 router.post(
   "/",

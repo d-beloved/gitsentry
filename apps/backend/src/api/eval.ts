@@ -1,6 +1,7 @@
 // Admin-triggered scanner eval. Runs here, not in the web app, because a full
 // sweep takes minutes — past a serverless function's ceiling.
-import express, {Request, Response, NextFunction} from "express";
+import express, {Request, Response} from "express";
+import {requireInternalKey} from "./internalAuth";
 import {runEval, loadFixtures} from "../../../../eval/harness";
 import {
   getProvider,
@@ -17,27 +18,7 @@ import {
 
 const router = express.Router();
 
-function verifyInternalKey(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void {
-  const key = process.env.INTERNAL_API_KEY;
-  // Fail closed when the key is not configured.
-  if (!key) {
-    console.error(
-      "[eval] INTERNAL_API_KEY is not configured — rejecting request",
-    );
-    res.status(503).json({error: "Endpoint not available"});
-    return;
-  }
-  const auth = req.headers["authorization"];
-  if (auth !== `Bearer ${key}`) {
-    res.status(401).json({error: "Unauthorized"});
-    return;
-  }
-  next();
-}
+const verifyInternalKey = requireInternalKey("eval");
 
 /** Config the run executed under; a score means nothing without its setup. */
 function currentConfig() {

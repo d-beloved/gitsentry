@@ -1,6 +1,7 @@
 import {supabase} from "./client";
 import {countBySeverity} from "../lib/scorer";
 import {effectiveQuotaPeriod} from "../lib/quotaPeriod";
+import {matchExisting, type DedupeCandidate} from "../lib/dedupe";
 import type {Finding} from "../../../../packages/scanner-contract/types";
 import type {
   OrgRow,
@@ -283,30 +284,54 @@ export async function saveFindings(
 
   const {data: scan, error: scanErr} = await supabase
     .from("scans")
-    .select("repo_id")
+    .select("repo_id, trigger_type, trigger_ref")
     .eq("id", scanId)
     .single();
 
   if (scanErr)
     throw new Error(`saveFindings: could not fetch scan: ${scanErr.message}`);
 
-  const rows = issues.map((issue) => ({
-    scan_id: scanId,
-    repo_id: (scan as {repo_id: string}).repo_id,
-    severity: issue.severity,
-    category: issue.category,
-    file_path: issue.file_path,
-    line_number: issue.line_number ?? null,
-    code_snippet: issue.code_snippet ?? null,
-    description: issue.description,
-    fix_suggestion: issue.fix_suggestion,
-    affected_component: issue.affected_component ?? null,
-    exploitation_scenario: issue.exploitation_scenario ?? null,
-    impact: issue.impact ?? null,
-    evidence: issue.evidence ?? null,
-    confidence: issue.confidence ?? null,
-    attacker_profile: issue.attacker_profile ?? null,
-  }));
+  const {repo_id: repoId, trigger_type, trigger_ref} = scan as {
+    repo_id: string;
+    trigger_type: string;
+    trigger_ref: string;
+  };
+
+  // Dedupe is best-effort: if the lookup fails, save everything rather than lose a finding.
+  const candidates = await getDedupeCandidates(
+    repoId,
+    scanId,
+    {trigger_type, trigger_ref},
+    [...new Set(issues.map((i) => i.file_path))],
+  ).catch((err: Error) => {
+    console.error("[findings] dedupe lookup failed — saving without it:", err.message);
+    return [] as DedupeCandidate[];
+  });
+  const matches = issues.map((issue) => matchExisting(issue, candidates));
+
+  const rows = issues.map((issue, index) => {
+    const match = matches[index];
+    const linked = match?.kind === "dismissed" || match?.kind === "duplicate";
+    return {
+      scan_id: scanId,
+      repo_id: repoId,
+      severity: issue.severity,
+      category: issue.category,
+      file_path: issue.file_path,
+      line_number: issue.line_number ?? null,
+      code_snippet: issue.code_snippet ?? null,
+      description: issue.description,
+      fix_suggestion: issue.fix_suggestion,
+      affected_component: issue.affected_component ?? null,
+      exploitation_scenario: issue.exploitation_scenario ?? null,
+      impact: issue.impact ?? null,
+      evidence: issue.evidence ?? null,
+      confidence: issue.confidence ?? null,
+      attacker_profile: issue.attacker_profile ?? null,
+      duplicate_of: linked ? match.canonicalId : null,
+      is_false_positive: match?.kind === "dismissed",
+    };
+  });
 
   const {data, error} = await supabase
     .from("findings")
@@ -315,9 +340,125 @@ export async function saveFindings(
   if (error) throw new Error(`saveFindings: ${error.message}`);
 
   const inserted = data as Array<{id: string}>;
-  return issues.map((issue, index) => ({
+  const saved = issues.map((issue, index) => ({
     ...issue,
     id: inserted?.[index]?.id,
+    duplicate_of: rows[index].duplicate_of,
+    is_false_positive: rows[index].is_false_positive,
+  }));
+
+  // The new row takes over as the group's canonical; the old one is about to go stale.
+  for (const [index, match] of matches.entries()) {
+    const newId = saved[index].id;
+    if (match?.kind !== "supersedes" || !newId) continue;
+    const {error: moveErr} = await supabase
+      .from("findings")
+      .update({duplicate_of: newId})
+      .eq("duplicate_of", match.canonicalId);
+    if (moveErr) console.error("[findings] re-pointing duplicates failed:", moveErr.message);
+  }
+
+  return saved;
+}
+
+export interface PRCommentTarget {
+  repoId: string;
+  prNumber: number;
+  repoFullName: string;
+  installationId: number;
+}
+
+/** The distinct PRs these scans belong to, with what's needed to edit their comment. */
+export async function getPRCommentTargets(scanIds: string[]): Promise<PRCommentTarget[]> {
+  if (!scanIds.length) return [];
+  const {data, error} = await supabase
+    .from("scans")
+    .select("repo_id, trigger_ref, repos(full_name, installation_id)")
+    .in("id", scanIds)
+    .eq("trigger_type", "pull_request");
+  if (error) throw new Error(`getPRCommentTargets: ${error.message}`);
+
+  type Row = {repo_id: string; trigger_ref: string; repos: {full_name: string; installation_id: number | null} | null};
+  const out = new Map<string, PRCommentTarget>();
+  for (const row of (data ?? []) as unknown as Row[]) {
+    const prNumber = parseInt(row.trigger_ref, 10);
+    if (!row.repos?.installation_id || isNaN(prNumber)) continue;
+    out.set(`${row.repo_id}#${prNumber}`, {
+      repoId: row.repo_id,
+      prNumber,
+      repoFullName: row.repos.full_name,
+      installationId: row.repos.installation_id,
+    });
+  }
+  return [...out.values()];
+}
+
+/** The scan that owns the PR's current comment, with its status. */
+export async function getLatestPRCommentScan(
+  repoId: string,
+  prNumber: number,
+): Promise<{scanId: string; commentId: number; status: string} | null> {
+  const {data} = await supabase
+    .from("scans")
+    .select("id, gh_comment_id, status")
+    .eq("repo_id", repoId)
+    .eq("trigger_type", "pull_request")
+    .eq("trigger_ref", String(prNumber))
+    .not("gh_comment_id", "is", null)
+    .order("created_at", {ascending: false})
+    .limit(1)
+    .maybeSingle();
+  const row = data as {id: string; gh_comment_id: number; status: string} | null;
+  return row ? {scanId: row.id, commentId: row.gh_comment_id, status: row.status} : null;
+}
+
+/** The PR or branch each listed finding came from, keyed by finding id. */
+export async function getFindingRefs(
+  ids: string[],
+): Promise<Map<string, {trigger_type: string; trigger_ref: string}>> {
+  const out = new Map<string, {trigger_type: string; trigger_ref: string}>();
+  if (!ids.length) return out;
+  const {data, error} = await supabase
+    .from("findings")
+    .select("id, scans(trigger_type, trigger_ref)")
+    .in("id", ids);
+  if (error) {
+    console.error("[findings] getFindingRefs failed:", error.message);
+    return out;
+  }
+  type Row = {id: string; scans: {trigger_type: string; trigger_ref: string} | null};
+  for (const row of (data ?? []) as unknown as Row[]) {
+    if (row.scans) out.set(row.id, row.scans);
+  }
+  return out;
+}
+
+/** Canonical, unresolved, non-stale findings in these files from other scans of the repo. */
+async function getDedupeCandidates(
+  repoId: string,
+  scanId: string,
+  trigger: {trigger_type: string; trigger_ref: string},
+  filePaths: string[],
+): Promise<DedupeCandidate[]> {
+  const {data, error} = await supabase
+    .from("findings")
+    .select("id, category, file_path, line_number, code_snippet, is_false_positive, scans!inner(trigger_type, trigger_ref)")
+    .eq("repo_id", repoId)
+    .in("file_path", filePaths)
+    .is("duplicate_of", null)
+    .eq("is_resolved", false)
+    .eq("is_stale", false)
+    .neq("scan_id", scanId);
+  if (error) throw new Error(error.message);
+
+  type Row = Omit<DedupeCandidate, "sameTrigger"> & {
+    scans: {trigger_type: string; trigger_ref: string} | null;
+  };
+  return ((data ?? []) as unknown as Row[]).map(({scans, ...row}) => ({
+    ...row,
+    is_false_positive: !!row.is_false_positive,
+    sameTrigger:
+      scans?.trigger_type === trigger.trigger_type && scans?.trigger_ref === trigger.trigger_ref,
   }));
 }
 
@@ -433,31 +574,65 @@ async function markStaleFindings(
 
   if (!prevScans?.length) return;
 
-  await supabase
+  const {data: retired} = await supabase
     .from("findings")
     .update({is_stale: true})
     .in("scan_id", prevScans.map((s) => (s as {id: string}).id))
     .in("file_path", examinedPaths)
     .eq("is_resolved", false)
     .eq("is_false_positive", false)
-    .eq("is_stale", false);
+    .eq("is_stale", false)
+    .select("id");
+
+  const retiredIds = ((retired ?? []) as {id: string}[]).map((r) => r.id);
+  if (retiredIds.length) await promoteDuplicates(retiredIds);
 }
 
-/** Still-open findings from earlier scans of this PR, so a narrow incremental scan can't read as clean. */
+// A retired canonical hands its group to its oldest open duplicate, so an issue still present
+// in another PR doesn't vanish from the dashboard along with it.
+async function promoteDuplicates(retiredIds: string[]): Promise<void> {
+  const {data} = await supabase
+    .from("findings")
+    .select("id, duplicate_of, is_resolved, is_false_positive, is_stale")
+    .in("duplicate_of", retiredIds)
+    .order("created_at", {ascending: true});
+
+  type Row = {id: string; duplicate_of: string; is_resolved: boolean; is_false_positive: boolean; is_stale: boolean};
+  const groups = new Map<string, Row[]>();
+  for (const row of (data ?? []) as Row[]) {
+    groups.set(row.duplicate_of, [...(groups.get(row.duplicate_of) ?? []), row]);
+  }
+
+  for (const [oldId, rows] of groups) {
+    const heir = rows.find((r) => !r.is_resolved && !r.is_false_positive && !r.is_stale);
+    if (!heir) continue;
+    await supabase.from("findings").update({duplicate_of: null}).eq("id", heir.id);
+    await supabase
+      .from("findings")
+      .update({duplicate_of: heir.id})
+      .eq("duplicate_of", oldId);
+  }
+}
+
+/**
+ * Still-open findings from earlier scans of this PR, so a narrow incremental scan can't read as clean.
+ * Throws on a read failure, so a comment edit never mistakes it for zero findings.
+ */
 export async function getOpenPRFindings(
   repoId: string,
   prNumber: number,
-  excludeScanId: string,
+  excludeScanId?: string,
 ): Promise<Finding[]> {
-  const {data: priorScans} = await supabase
+  let scansQ = supabase
     .from("scans")
     .select("id")
     .eq("repo_id", repoId)
     .eq("trigger_type", "pull_request")
     .eq("trigger_ref", String(prNumber))
-    .eq("status", "complete")
-    .neq("id", excludeScanId);
-
+    .eq("status", "complete");
+  if (excludeScanId) scansQ = scansQ.neq("id", excludeScanId);
+  const {data: priorScans, error: scansError} = await scansQ;
+  if (scansError) throw new Error(`getOpenPRFindings: ${scansError.message}`);
   if (!priorScans?.length) return [];
 
   const {data, error} = await supabase
@@ -468,11 +643,7 @@ export async function getOpenPRFindings(
     .eq("is_false_positive", false)
     .eq("is_stale", false);
 
-  if (error) {
-    console.error("[findings] getOpenPRFindings failed:", error.message);
-    return [];
-  }
-
+  if (error) throw new Error(`getOpenPRFindings: ${error.message}`);
   return (data ?? []) as Finding[];
 }
 

@@ -1,4 +1,4 @@
-import {formatReviewBody} from "../github";
+import {codeSpan, formatReviewBody} from "../github";
 import type {Finding} from "../../../../../packages/scanner-contract/types";
 
 const finding = (over: Partial<Finding> = {}): Finding => ({
@@ -50,5 +50,48 @@ describe("formatReviewBody", () => {
     expect(body).toContain("Found **1 issue** in this PR (1 high)");
     expect(body).not.toContain("Introduced by the latest commits");
     expect(body).not.toContain("Still open from earlier commits");
+  });
+
+  describe("issues already flagged on another PR", () => {
+    const tracked = new Map([["canon-1", "PR #12"]]);
+    const dupe = finding({duplicate_of: "canon-1", file_path: "src/db.ts", line_number: 42});
+
+    it("folds them into one line each instead of a full write-up", () => {
+      const body = formatReviewBody([finding(), dupe], [], "summary", "scan-abc12345", false, undefined, tracked);
+
+      expect(body).toContain("Found **1 issue** in this PR (1 high)");
+      expect(body).toContain("<summary>1 issue already flagged in PR #12</summary>");
+      expect(body).toContain("`src/db.ts:42` · see PR #12");
+      expect(body.match(/^### /gm)).toHaveLength(1);
+    });
+
+    it("never reads as clean when the only issues are tracked elsewhere", () => {
+      const body = formatReviewBody([dupe], [], "summary", "scan-abc12345", false, undefined, tracked);
+
+      expect(body).not.toContain(CLEAN);
+      expect(body).toContain("**No new security issues** in this PR.");
+      expect(body).toContain("already flagged in PR #12");
+    });
+
+    it("writes a duplicate up in full when its listed copy is not on another PR", () => {
+      const body = formatReviewBody([dupe], [], "summary", "scan-abc12345", false, undefined, new Map());
+
+      expect(body).toContain("Found **1 issue** in this PR");
+      expect(body).not.toContain("<details>");
+    });
+
+    it("keeps hostile file paths and categories from breaking out of the line", () => {
+      const evil = finding({duplicate_of: "canon-1", file_path: "a`<img src=x>`.ts", category: "<b>x</b>" as Finding["category"]});
+      const body = formatReviewBody([evil], [], "summary", "scan-abc12345", false, undefined, tracked);
+
+      expect(body).toContain("bxb in `aimg src=x.ts:28` · see PR #12");
+      expect(body).not.toContain("<img");
+    });
+  });
+});
+
+describe("codeSpan", () => {
+  it("strips backticks, angle brackets and newlines from a branch name", () => {
+    expect(codeSpan("feat/`<img src=x>`\nmore")).toBe("`feat/img src=xmore`");
   });
 });
